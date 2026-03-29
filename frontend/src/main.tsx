@@ -5,6 +5,11 @@ import './index.css'
 import App from './App.tsx'
 import { queryClient } from '@/lib/queryClient'
 import { I18nProvider } from '@/components/i18n-provider'
+import { installVhVar } from '@/lib/vh'
+
+// Keep --vh in sync with the visual viewport so calc(var(--vh, 1vh) * 100) gives
+// the visible screen height on mobile browsers (accounts for address-bar collapse).
+installVhVar()
 
 const BOOT_READY_ATTR = 'data-gist-boot-ready'
 const BOOT_DONE_ATTR = 'data-gist-booted'

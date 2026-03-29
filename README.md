@@ -18,6 +18,19 @@
 - PWA，可安装到桌面和移动设备
 - 多语言 (简体中文 / English)
 
+## 移动端浏览器 UI 收起行为（Android Chrome）
+
+> **说明**：Web 应用本身无法通过 JavaScript 直接控制浏览器地址栏或底部工具栏的显示/隐藏。Android Chrome 的原生行为是：当页面滚动发生在 **`window`（文档）上**时，向下滚动会自动收起地址栏和底部工具栏，向上滚动则恢复显示。
+>
+> **实现方案**：在移动端文章列表页，滚动发生在 `window` 上，而非嵌套的 `div` 容器内：
+> - 文章列表使用 `useWindowVirtualizer`（TanStack Virtual），虚拟滚动以 window 为滚动容器。
+> - 移动端列表视图为正常文档流（无 `overflow:hidden` 包裹），从而让浏览器感知文档滚动。
+> - 详情视图使用 `position:fixed` 作为覆盖层从右侧滑入，列表仍留在 DOM 中以保留滚动位置。
+> - 详情视图打开时通过 `document.body.style.overflow = 'hidden'` 锁定背景滚动，关闭后自动恢复。
+> - 视口高度通过 `visualViewport.height`（降级为 `window.innerHeight`）动态写入 `--vh` CSS 变量，配合 `100dvh` 避免地址栏折叠时的高度抖动。
+>
+> 桌面端布局不受影响，仍使用原有的三列布局与容器内滚动。
+
 ## 部署
 
 ### Docker Compose (推荐)

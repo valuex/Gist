@@ -1,3 +1,4 @@
+import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import {
   CheckCircleIcon,
@@ -57,7 +58,12 @@ export function EntryListHeader({
   const setFeedViewMode = useFeedViewStore((s) => s.setMode)
 
   return (
-    <div className="flex h-14 items-center justify-between gap-4 px-4 shrink-0">
+    <div className={cn(
+      "flex h-14 items-center justify-between gap-4 px-4 shrink-0",
+      // On mobile the list uses window scroll; keep the header pinned at the top
+      // so it doesn't scroll away with the content.
+      isMobile && "sticky top-0 z-10 bg-background"
+    )}>
       <div className="flex min-w-0 flex-1 items-center gap-2">
         {isMobile && onMenuClick && (
           <button

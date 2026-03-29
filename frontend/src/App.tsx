@@ -254,6 +254,17 @@ function AuthenticatedApp() {
     }
   }, [visibleContentTypes, contentType, selectAll])
 
+  // On mobile, lock body scroll when the detail view is shown.
+  // This prevents the background list (which stays in the document flow for scroll
+  // position preservation) from being scrollable while the fixed detail overlay is open.
+  useEffect(() => {
+    if (!isMobile || mobileView !== 'detail') return
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [isMobile, mobileView])
+
   // Redirect root to /all with first visible type (must be after ALL hooks including useCallback)
   if (location === '/') {
     // 等待 appearanceSettings 加载完成再跳转，避免先跳 article 再跳正确类型
@@ -309,13 +320,17 @@ function AuthenticatedApp() {
         </div>
       )
     } else {
-      // List and detail views rendered together, controlled by CSS
+      // List and detail views rendered together.
+      // List is in normal document flow so window scroll drives the entry list —
+      // Android Chrome collapses the address bar / bottom toolbar when the user scrolls down.
+      // Detail view uses position:fixed so it slides over the list without requiring
+      // overflow:hidden on a wrapper (which would break window scrolling).
       mobileContent = (
-        <div className="relative h-dvh w-screen max-w-full overflow-hidden">
-          {/* List view - always rendered to preserve scroll position */}
+        <>
+          {/* List view: document flow, window-scroll enabled */}
           <div className={cn(
-            'absolute inset-0 flex flex-col overflow-hidden bg-background safe-area-top',
-            mobileView === 'detail' && 'invisible'
+            'flex flex-col bg-background safe-area-top',
+            mobileView === 'detail' && 'invisible pointer-events-none'
           )}>
             <EntryList
               selection={selection}
@@ -330,9 +345,9 @@ function AuthenticatedApp() {
               onMenuClick={openSidebar}
             />
           </div>
-          {/* Detail view - slides in from right */}
+          {/* Detail view: fixed overlay slides in from right */}
           <div className={cn(
-            'absolute inset-0 bg-background transition-transform duration-300 ease-out safe-area-top',
+            'fixed inset-0 bg-background transition-transform duration-300 ease-out safe-area-top',
             mobileView === 'detail' ? 'translate-x-0' : 'translate-x-full'
           )}>
             <EntryContent
@@ -342,7 +357,7 @@ function AuthenticatedApp() {
               onBack={showList}
             />
           </div>
-        </div>
+        </>
       )
     }
 

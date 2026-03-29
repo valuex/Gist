@@ -17,7 +17,7 @@ interface EntryListItemProps {
   style?: React.CSSProperties
   'data-index'?: number
   markReadOnScroll?: boolean
-  scrollRootRef?: React.RefObject<HTMLElement | null>
+  scrollRootRef?: React.RefObject<HTMLElement | null> | null
   topOffset?: number
   onMarkRead?: (entryId: string) => void
 }
@@ -79,8 +79,12 @@ export const EntryListItem = forwardRef<HTMLDivElement, EntryListItemProps>(
 
   useEffect(() => {
     if (!markReadOnScroll || entry.read || !onMarkRead) return
-    const root = scrollRootRef?.current
-    if (!root || !itemRef.current) return
+    if (!itemRef.current) return
+    // When scrollRootRef is undefined the feature is disabled.
+    // When scrollRootRef is null (mobile window-scroll) or a RefObject, use the
+    // resolved element (null = viewport) as the IntersectionObserver root.
+    if (scrollRootRef === undefined) return
+    const root = scrollRootRef === null ? null : scrollRootRef.current
 
     hasBeenVisibleRef.current = false
 

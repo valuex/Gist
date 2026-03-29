@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useVirtualizer, useWindowVirtualizer } from '@tanstack/react-virtual'
 import { useEntriesInfinite, useMarkAsRead, useRemoveFromUnreadList, useUnreadCounts } from '@/hooks/useEntries'
 import { useFeeds } from '@/hooks/useFeeds'
 import { useFolders } from '@/hooks/useFolders'
@@ -108,7 +108,7 @@ export function EntryList({
 
   const getFeedExplicitViewMode = useFeedViewStore((s) => s.getExplicitMode)
 
-  useScrollToTop(containerRef, 'entrylist')
+  useScrollToTop(isMobile ? 'window' : containerRef, 'entrylist')
 
   const { data: feeds = [] } = useFeeds()
   const { data: folders = [] } = useFolders()
@@ -140,21 +140,35 @@ export function EntryList({
   const autoTranslate = aiSettings?.autoTranslate ?? false
   const targetLanguage = aiSettings?.summaryLanguage ?? 'zh-CN'
 
-  // Save/restore scroll position per selection+contentType
   const scrollKey = selectionScrollKey(selection, contentType)
 
-  // Restore scroll position on same-mount key change (e.g., article -> notification).
-  // On remount (e.g., returning from picture mode), the virtualizer's own
-  // _willUpdate handles restoration via initialOffset.
+  // Save/restore scroll position per selection+contentType.
+  // On mobile: window.scrollY is used because the list uses window scroll.
+  // On desktop: containerRef.scrollTop is used (scroll happens in the element).
+  // Restores on same-mount key change (e.g., article → notification) and on
+  // isMobile toggle (e.g., window resize crossing the mobile breakpoint).
   useLayoutEffect(() => {
+    const saved = entryListScrollPositions.get(scrollKey)
+    if (isMobile) {
+      window.scrollTo(0, saved ?? 0)
+      return
+    }
     const node = containerRef.current
     if (!node) return
-
-    const saved = entryListScrollPositions.get(scrollKey)
     node.scrollTop = saved ?? 0
-  }, [scrollKey])
+  }, [scrollKey, isMobile])
 
   useEffect(() => {
+    if (isMobile) {
+      const handleScroll = () => {
+        entryListScrollPositions.set(scrollKey, window.scrollY)
+      }
+      window.addEventListener('scroll', handleScroll, { passive: true })
+      return () => {
+        window.removeEventListener('scroll', handleScroll)
+      }
+    }
+
     const node = containerRef.current
     if (!node) return
 
@@ -166,7 +180,7 @@ export function EntryList({
     return () => {
       node.removeEventListener('scroll', handleScroll)
     }
-  }, [scrollKey])
+  }, [scrollKey, isMobile])
 
   // Cancel pending translations and reset state when list changes
   useEffect(() => {
@@ -234,14 +248,42 @@ export function EntryList({
     lastUnreadCleanupKeyRef.current = unreadCleanupKey
   }, [entries, unreadOnly, isLoading, unreadCleanupKey, removeFromUnreadList])
 
-  const virtualizer = useVirtualizer({
-    count: entries.length,
+  // Mobile: measure the list content container position in the document so
+  // useWindowVirtualizer knows where the list starts (below the sticky header).
+  const listContentRef = useRef<HTMLDivElement>(null)
+  const [scrollMargin, setScrollMargin] = useState(TOP_BAR_HEIGHT)
+
+  useLayoutEffect(() => {
+    if (!isMobile || !listContentRef.current) return
+    // getBoundingClientRect().top at scrollY=0 equals the document-relative offset.
+    const rect = listContentRef.current.getBoundingClientRect()
+    setScrollMargin(rect.top + window.scrollY)
+  }, [isMobile])
+
+  // Window virtualizer for mobile: scroll happens on window so Android Chrome
+  // can collapse the address bar / bottom toolbar while browsing the article list.
+  // Both hooks must always be called (no conditional hooks), but only one is used.
+  // count:0 effectively disables the unused virtualizer (it renders no items and
+  // ignores scroll events from its scroll element).
+  const windowVirtualizer = useWindowVirtualizer({
+    count: isMobile ? entries.length : 0,
+    estimateSize: () => ESTIMATED_ITEM_HEIGHT,
+    overscan: 5,
+    scrollMargin,
+  })
+
+  // Element virtualizer for desktop: scroll happens inside the column container.
+  // count:0 disables it on mobile (see note above about conditional hooks).
+  const elementVirtualizer = useVirtualizer({
+    count: isMobile ? 0 : entries.length,
     getScrollElement: () => containerRef.current,
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
     overscan: 5,
     // Restore offset on remount (only used on first mount)
-    initialOffset: entryListScrollPositions.get(scrollKey),
+    initialOffset: isMobile ? 0 : (entryListScrollPositions.get(scrollKey) ?? 0),
   })
+
+  const virtualizer = isMobile ? windowVirtualizer : elementVirtualizer
 
   const virtualItems = virtualizer.getVirtualItems()
 
@@ -519,7 +561,7 @@ export function EntryList({
   }, [onMarkAllReadAndGoNextFeed])
 
   return (
-    <div ref={listWrapperRef} className="relative flex h-full flex-col">
+    <div ref={listWrapperRef} className={cn("relative flex flex-col", !isMobile && "h-full")}>
       <EntryListHeader
         title={title}
         unreadCount={unreadCount}
@@ -536,11 +578,10 @@ export function EntryList({
         sidebarVisible={sidebarVisible}
       />
 
-      <ScrollAreaPrimitive.Root className="relative min-h-0 flex-1 overflow-hidden">
-        <div
-          ref={containerRef}
-          className="h-full overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
-        >
+      {isMobile ? (
+        // Mobile: window-scroll mode — no nested scroll container so Android Chrome
+        // can collapse the address bar / bottom toolbar as the user scrolls the list.
+        <div ref={listContentRef}>
           {isLoading ? (
             <EntryListSkeleton />
           ) : entries.length === 0 ? (
@@ -548,11 +589,16 @@ export function EntryList({
           ) : (
             <div
               className="relative w-full"
-              style={{ height: virtualizer.getTotalSize() }}
+              style={{ height: windowVirtualizer.getTotalSize() }}
             >
               <div
+                className="absolute top-0 left-0 w-full"
                 style={{
-                  transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
+                  // For useWindowVirtualizer, item.start values include scrollMargin
+                  // (they are document-relative), so we subtract scrollMargin to get
+                  // the position relative to this container (which starts at scrollMargin).
+                  // Desktop uses useVirtualizer where start is already container-relative.
+                  transform: `translateY(${(virtualItems[0]?.start ?? 0) - windowVirtualizer.options.scrollMargin}px)`,
                 }}
               >
                 {virtualItems.map((virtualRow) => {
@@ -571,7 +617,7 @@ export function EntryList({
                       autoTranslate={autoTranslate}
                       targetLanguage={targetLanguage}
                       markReadOnScroll={generalSettings?.markReadOnScroll ?? false}
-                      scrollRootRef={containerRef}
+                      scrollRootRef={null}
                       topOffset={TOP_BAR_HEIGHT}
                       onMarkRead={handleMarkReadOnScroll}
                     />
@@ -582,13 +628,65 @@ export function EntryList({
           )}
 
           {isFetchingNextPage && <LoadingMore />}
-
         </div>
-        <ScrollBar />
-        <ScrollAreaPrimitive.Corner />
-      </ScrollAreaPrimitive.Root>
+      ) : (
+        // Desktop: element-scroll mode — scroll happens inside the column container.
+        <ScrollAreaPrimitive.Root className="relative min-h-0 flex-1 overflow-hidden">
+          <div
+            ref={containerRef}
+            className="h-full overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
+          >
+            {isLoading ? (
+              <EntryListSkeleton />
+            ) : entries.length === 0 ? (
+              <EntryListEmpty />
+            ) : (
+              <div
+                className="relative w-full"
+                style={{ height: virtualizer.getTotalSize() }}
+              >
+                <div
+                  style={{
+                    transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
+                  }}
+                >
+                  {virtualItems.map((virtualRow) => {
+                    const entry = entries[virtualRow.index]
+                    if (!entry) return null
 
-      {showMarkAllReadFooter && (
+                    return (
+                      <EntryListItem
+                        key={entry.id}
+                        ref={virtualizer.measureElement}
+                        data-index={virtualRow.index}
+                        entry={entry}
+                        feed={feedsMap.get(entry.feedId)}
+                        isSelected={entry.id === selectedEntryId}
+                        onClick={() => handleEntryClick(entry)}
+                        autoTranslate={autoTranslate}
+                        targetLanguage={targetLanguage}
+                        markReadOnScroll={generalSettings?.markReadOnScroll ?? false}
+                        scrollRootRef={containerRef}
+                        topOffset={TOP_BAR_HEIGHT}
+                        onMarkRead={handleMarkReadOnScroll}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {isFetchingNextPage && <LoadingMore />}
+
+          </div>
+          <ScrollBar />
+          <ScrollAreaPrimitive.Corner />
+        </ScrollAreaPrimitive.Root>
+      )}
+
+      {/* Floating "Mark All Read + Next Feed" button — desktop only.
+          On mobile the mark-all-read action is available in the header dropdown. */}
+      {!isMobile && showMarkAllReadFooter && (
         <button
           ref={markReadButtonRef}
           type="button"
