@@ -27,6 +27,9 @@ type NetworkTestResponse = networkTestResponse
 type GeneralSettingsResponse = generalSettingsResponse
 type AppearanceSettingsResponse = appearanceSettingsResponse
 type AITestResponse = aiTestResponse
+type SubscriptionResponse = subscriptionResponse
+type BatchSubscriptionResponse = batchSubscriptionResponse
+type BatchSubscriptionResult = batchSubscriptionResult
 
 var NewFeedHandlerHelper = NewFeedHandler
 var NewEntryHandlerHelper = NewEntryHandler
@@ -38,6 +41,7 @@ var NewDomainRateLimitHandlerHelper = NewDomainRateLimitHandler
 var NewOPMLHandlerHelper = NewOPMLHandler
 var NewIconHandlerHelper = NewIconHandler
 var NewProxyHandlerHelper = NewProxyHandler
+var NewSubscriptionHandlerHelper = NewSubscriptionHandler
 
 var WriteServiceError = writeServiceError
 var IDPtrToString = idPtrToString

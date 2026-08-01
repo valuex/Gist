@@ -179,7 +179,8 @@ func TestSettingsHandler_UpdateGeneralSettings_Success(t *testing.T) {
 
 	e := newTestEcho()
 	reqBody := map[string]interface{}{
-		"autoReadability": true,
+		"autoReadability":  true,
+		"markReadOnScroll": true,
 	}
 	req := newJSONRequest(http.MethodPut, "/settings/general", reqBody)
 	c, rec := newTestContext(e, req)

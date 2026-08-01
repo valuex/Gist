@@ -123,6 +123,84 @@ bun run lint
 
 [GPL-2.0](./LICENSE)
 
+## 订阅 API（NAS / 自动化场景）
+
+支持通过 HTTP API 从容器外部添加 RSS 订阅，适用于 NAS 上脚本、快捷指令等自动化场景。
+
+所有接口需携带 `Authorization: ****** 请求头（token 通过登录接口获取）。
+
+### 1. 新增单条订阅
+
+```bash
+# 获取 token
+TOKEN=$(curl -s -X POST "http://NAS_IP:PORT/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"identifier":"your_username","password":"your_password"}' \
+  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# 新增订阅（201 = 新建，200 = 已存在）
+curl -X POST "http://NAS_IP:PORT/api/subscriptions" \
+  -H "Authorization: ******" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/rss.xml","title":"可选标题","category":"可选分类"}'
+```
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `url` | string | ✅ | RSS/Atom feed 地址（http/https） |
+| `title` | string | | 自定义标题（不填则使用 feed 原标题） |
+| `category` | string | | 分类（文件夹）名称，不存在则自动创建 |
+
+**响应示例（201 新建）**
+
+```json
+{
+  "id": "1234567890",
+  "title": "Example Feed",
+  "url": "https://example.com/rss.xml",
+  "folderId": "9876543210",
+  "isNew": true,
+  "createdAt": "2024-01-01T00:00:00Z",
+  "updatedAt": "2024-01-01T00:00:00Z"
+}
+```
+
+`isNew: false` 表示订阅已存在（返回 HTTP 200，幂等）。
+
+### 2. 批量新增订阅
+
+```bash
+curl -X POST "http://NAS_IP:PORT/api/subscriptions/batch" \
+  -H "Authorization: ******" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      {"url":"https://a.example.com/rss","category":"Tech"},
+      {"url":"https://b.example.com/feed.xml","title":"Blog B"}
+    ]
+  }'
+```
+
+**响应示例**
+
+```json
+{
+  "created": 1,
+  "skipped": 1,
+  "errors": 0,
+  "results": [
+    {"url":"https://a.example.com/rss","status":"created","feed":{...}},
+    {"url":"https://b.example.com/feed.xml","status":"exists","feed":{...}}
+  ]
+}
+```
+
+`status` 取值：`"created"`（新建）、`"exists"`（已存在）、`"error"`（失败）。
+
+> **注意**：批量接口不拉取 feed 内容（速度更快），单条接口会拉取 feed 以获取初始条目。
+
 ## 便捷操作特性
 - 特定feed支持三种视图自定义：常规模式（显示rss feed提供的内容）；阅读模式（显示全文）；浏览器（将文章在新tab打开，适用于需要登录查看全文的网站）
 - 文章列表右滑显示feed列表

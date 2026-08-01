@@ -37,6 +37,7 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 	handler.NewProxyHandler(nil).RegisterRoutes(g)
 	handler.NewOPMLHandler(nil, nil).RegisterRoutes(g)
 	handler.NewSettingsHandler(nil, network.NewClientFactoryForTest(&http.Client{})).RegisterRoutes(g)
+	handler.NewSubscriptionHandler(nil, nil).RegisterRoutes(g)
 
 	iconHandler := handler.NewIconHandler(nil)
 	iconHandler.RegisterRoutes(e)
@@ -111,4 +112,7 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 	assertRoute(t, routes, http.MethodGet, "/settings/appearance")
 	assertRoute(t, routes, http.MethodPut, "/settings/appearance")
 	assertRoute(t, routes, http.MethodDelete, "/settings/anubis-cookies")
+
+	assertRoute(t, routes, http.MethodPost, "/subscriptions")
+	assertRoute(t, routes, http.MethodPost, "/subscriptions/batch")
 }

@@ -43,6 +43,7 @@ func TestNewRouter_RegistersRoutes(t *testing.T) {
 	aiHandler := handler.NewAIHandler(aiService)
 	authHandler := handler.NewAuthHandler(authService)
 	domainRateLimitHandler := handler.NewDomainRateLimitHandler(domainRateLimitService)
+	subscriptionHandler := handler.NewSubscriptionHandler(feedService, folderService)
 
 	e := gh.NewRouter(
 		folderHandler,
@@ -55,6 +56,7 @@ func TestNewRouter_RegistersRoutes(t *testing.T) {
 		aiHandler,
 		authHandler,
 		domainRateLimitHandler,
+		subscriptionHandler,
 		authService,
 		"",
 		true,
@@ -95,6 +97,7 @@ func TestNewRouter_SwaggerDisabled(t *testing.T) {
 	aiHandler := handler.NewAIHandler(aiService)
 	authHandler := handler.NewAuthHandler(authService)
 	domainRateLimitHandler := handler.NewDomainRateLimitHandler(domainRateLimitService)
+	subscriptionHandler := handler.NewSubscriptionHandler(feedService, folderService)
 
 	e := gh.NewRouter(
 		folderHandler,
@@ -107,6 +110,7 @@ func TestNewRouter_SwaggerDisabled(t *testing.T) {
 		aiHandler,
 		authHandler,
 		domainRateLimitHandler,
+		subscriptionHandler,
 		authService,
 		"",
 		false,
@@ -147,6 +151,7 @@ func TestNewRouter_LogoutRouteIsPublic(t *testing.T) {
 	aiHandler := handler.NewAIHandler(aiService)
 	authHandler := handler.NewAuthHandler(authService)
 	domainRateLimitHandler := handler.NewDomainRateLimitHandler(domainRateLimitService)
+	subscriptionHandler := handler.NewSubscriptionHandler(feedService, folderService)
 
 	e := gh.NewRouter(
 		folderHandler,
@@ -159,6 +164,7 @@ func TestNewRouter_LogoutRouteIsPublic(t *testing.T) {
 		aiHandler,
 		authHandler,
 		domainRateLimitHandler,
+		subscriptionHandler,
 		authService,
 		"",
 		false,

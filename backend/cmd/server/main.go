@@ -112,8 +112,9 @@ func main() {
 	aiHandler := handler.NewAIHandler(aiService)
 	authHandler := handler.NewAuthHandler(authService)
 	domainRateLimitHandler := handler.NewDomainRateLimitHandler(domainRateLimitService)
+	subscriptionHandler := handler.NewSubscriptionHandler(feedService, folderService)
 
-	router := transport.NewRouter(folderHandler, feedHandler, entryHandler, opmlHandler, iconHandler, proxyHandler, settingsHandler, aiHandler, authHandler, domainRateLimitHandler, authService, cfg.StaticDir, cfg.EnableSwagger)
+	router := transport.NewRouter(folderHandler, feedHandler, entryHandler, opmlHandler, iconHandler, proxyHandler, settingsHandler, aiHandler, authHandler, domainRateLimitHandler, subscriptionHandler, authService, cfg.StaticDir, cfg.EnableSwagger)
 	pprofServer := startPprofServer(cfg.PprofAddr)
 
 	// Start background scheduler (15 minutes interval)

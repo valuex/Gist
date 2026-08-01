@@ -29,6 +29,7 @@ type AISettings struct {
 type GeneralSettings struct {
 	FallbackUserAgent string `json:"fallbackUserAgent"`
 	AutoReadability   bool   `json:"autoReadability"`
+	MarkReadOnScroll  bool   `json:"markReadOnScroll"`
 }
 
 // NetworkSettings holds network proxy configuration.
@@ -64,6 +65,9 @@ const (
 
 	keyFallbackUserAgent = "general.fallback_user_agent"
 	keyAutoReadability   = "general.auto_readability"
+	keyMarkReadOnScroll  = "general.mark_read_on_scroll"
+
+	keyAIRequestOptions = "ai.request_options"
 
 	keyNetworkEnabled  = "network.proxy_enabled"
 	keyNetworkType     = "network.proxy_type"
@@ -354,6 +358,7 @@ func (s *settingsService) GetGeneralSettings(ctx context.Context) (*GeneralSetti
 		settings.FallbackUserAgent = val
 	}
 	settings.AutoReadability = s.getBool(ctx, keyAutoReadability)
+	settings.MarkReadOnScroll = s.getBool(ctx, keyMarkReadOnScroll)
 
 	return settings, nil
 }
