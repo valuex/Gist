@@ -6,6 +6,7 @@ import { useFeeds } from '@/hooks/useFeeds'
 import { useFolders } from '@/hooks/useFolders'
 import { useAISettings } from '@/hooks/useAISettings'
 import { useGeneralSettings } from '@/hooks/useGeneralSettings'
+import { useGeneralSettings } from '@/hooks/useGeneralSettings'
 import { useSwipeGesture } from '@/hooks/useSwipeGesture'
 import { selectionToParams, type SelectionType } from '@/hooks/useSelection'
 import { flattenUniqueEntries } from '@/lib/entry-pagination'
@@ -15,12 +16,16 @@ import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area'
 import { ScrollBar } from '@/components/ui/scroll-area'
 import { EntryListItem } from './EntryListItem'
 import { EntryListHeader } from './EntryListHeader'
-import { needsTranslation } from '@/lib/language-detect'
+import { needsTranslation as needsTranslationAsync } from '@/lib/language-detect-async'
 import { translateArticlesBatch, cancelAllBatchTranslations } from '@/services/translation-service'
 import { translationActions } from '@/stores/translation-store'
-import { selectionScrollKey, entryListScrollPositions } from './scroll-key'
+import {
+  selectionScrollKey,
+  entryListScrollPositions,
+} from './scroll-key'
 import { useScrollToTop } from '@/hooks/useScrollToTop'
 import { useFeedViewStore } from '@/stores/feed-view-store'
+import { useScrollMarkRead } from './useScrollMarkRead'
 import type { Entry, Feed, Folder, ContentType } from '@/types/api'
 
 interface EntryListProps {
@@ -33,14 +38,14 @@ interface EntryListProps {
   onToggleUnreadOnly: () => void
   contentType: ContentType
   isMobile?: boolean
+  isActive?: boolean
   onMenuClick?: () => void
   isTablet?: boolean
   onToggleSidebar?: () => void
   sidebarVisible?: boolean
 }
-
-const ESTIMATED_ITEM_HEIGHT = 100
 const TOP_BAR_HEIGHT = 56
+const SCROLL_PADDING_COUNT = 5
 const MARK_READ_BUTTON_STORAGE_KEY = 'gist.markAllReadButtonPos'
 
 type StoredButtonPosition = { xRatio: number; yRatio: number }
@@ -83,6 +88,7 @@ export function EntryList({
   onToggleUnreadOnly,
   contentType,
   isMobile,
+  isActive = true,
   onMenuClick,
   isTablet,
   onToggleSidebar,
@@ -94,6 +100,7 @@ export function EntryList({
   const params = selectionToParams(selection, contentType)
   const containerRef = useRef<HTMLDivElement>(null)
   const listWrapperRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const markReadButtonRef = useRef<HTMLButtonElement>(null)
   const markReadPositionRef = useRef<{ x: number; y: number } | null>(null)
   const dragStateRef = useRef<{
@@ -108,11 +115,13 @@ export function EntryList({
 
   const getFeedExplicitViewMode = useFeedViewStore((s) => s.getExplicitMode)
 
+  // Mobile: scroll the window; Desktop: scroll the container div
   useScrollToTop(isMobile ? 'window' : containerRef, 'entrylist')
 
   const { data: feeds = [] } = useFeeds()
   const { data: folders = [] } = useFolders()
   const { data: aiSettings } = useAISettings()
+  const { data: generalSettings } = useGeneralSettings()
   const { data: generalSettings } = useGeneralSettings()
   const { data: unreadCounts } = useUnreadCounts()
   const { mutate: markAsRead } = useMarkAsRead()
@@ -128,72 +137,119 @@ export function EntryList({
     enabledDirections: ['right'],
     threshold: 100,
     preventScroll: true,
-    startFrom: { left: 64 },
     enabled: Boolean(isMobile && onMenuClick),
   })
 
   // Track translated entries to avoid re-translating
   const translatedEntries = useRef(new Set<string>())
   const pendingTranslation = useRef(new Map<string, Entry>())
+  const pendingDetection = useRef(new Set<string>())
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const translationSession = useRef(0)
 
   const autoTranslate = aiSettings?.autoTranslate ?? false
   const targetLanguage = aiSettings?.summaryLanguage ?? 'zh-CN'
+  const markReadOnScroll = generalSettings?.markReadOnScroll ?? false
 
+  // Save/restore scroll position per selection+contentType
   const scrollKey = selectionScrollKey(selection, contentType)
 
-  // Save/restore scroll position per selection+contentType.
-  // On mobile: window.scrollY is used because the list uses window scroll.
-  // On desktop: containerRef.scrollTop is used (scroll happens in the element).
-  // Restores on same-mount key change (e.g., article → notification) and on
-  // isMobile toggle (e.g., window resize crossing the mobile breakpoint).
+  // Track previous isActive value to detect detail→list transition on mobile
+  const prevIsActiveRef = useRef(isActive)
+
+  // Restore scroll position on same-mount key change (e.g., article -> notification).
+  // Mobile: uses window scroll; Desktop: uses container div scrollTop.
   useLayoutEffect(() => {
-    const saved = entryListScrollPositions.get(scrollKey)
     if (isMobile) {
-      window.scrollTo(0, saved ?? 0)
+      if (!isActive) {
+        // Entering detail view — record so we know to use rAF on return
+        prevIsActiveRef.current = false
+        return
+      }
+      const wasInactive = !prevIsActiveRef.current
+      prevIsActiveRef.current = true
+      const saved = entryListScrollPositions.get(scrollKey)
+      if (saved == null || saved === 0) return
+      if (wasInactive) {
+        // Returning from detail view: defer so virtualizer re-enables and DOM paints
+        requestAnimationFrame(() => {
+          window.scrollTo(0, saved)
+        })
+      } else {
+        // scrollKey changed while list was active (e.g., feed switch) — restore immediately
+        window.scrollTo(0, saved)
+      }
       return
     }
+    prevIsActiveRef.current = isActive
     const node = containerRef.current
     if (!node) return
+    const saved = entryListScrollPositions.get(scrollKey)
     node.scrollTop = saved ?? 0
-  }, [scrollKey, isMobile])
+  }, [isMobile, isActive, scrollKey])
+
+  const maybeFetchNextPage = useCallback(() => {
+    const node = containerRef.current
+    if (!node || !hasNextPage || isFetchingNextPage) return
+
+    const distanceToBottom = node.scrollHeight - node.scrollTop - node.clientHeight
+    if (distanceToBottom <= 600) {
+      fetchNextPage()
+    }
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage])
 
   useEffect(() => {
     if (isMobile) {
+      // Only track window scroll when this list is the active view
+      if (!isActive) return
       const handleScroll = () => {
         entryListScrollPositions.set(scrollKey, window.scrollY)
       }
       window.addEventListener('scroll', handleScroll, { passive: true })
-      return () => {
-        window.removeEventListener('scroll', handleScroll)
-      }
+      return () => window.removeEventListener('scroll', handleScroll)
     }
-
     const node = containerRef.current
     if (!node) return
-
     const handleScroll = () => {
       entryListScrollPositions.set(scrollKey, node.scrollTop)
+      maybeFetchNextPage()
     }
-
     node.addEventListener('scroll', handleScroll, { passive: true })
     return () => {
       node.removeEventListener('scroll', handleScroll)
     }
-  }, [scrollKey, isMobile])
+  }, [isMobile, isActive, maybeFetchNextPage, scrollKey])
 
   // Cancel pending translations and reset state when list changes
   useEffect(() => {
     // Cancel any in-flight batch translations
     cancelAllBatchTranslations()
     // Clear translation tracking for new list
+    translationSession.current += 1
     translatedEntries.current.clear()
     pendingTranslation.current.clear()
+    pendingDetection.current.clear()
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current)
       debounceTimer.current = null
     }
+    // Reset scroll-read and auto-jump tracking for new selection
+    markedReadByScrollRef.current.clear()
+    hasTriggeredAutoJumpRef.current = false
   }, [selection, contentType])
+
+  useEffect(() => {
+    const pendingDetectionEntries = pendingDetection.current
+
+    return () => {
+      translationSession.current += 1
+      pendingDetectionEntries.clear()
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current)
+        debounceTimer.current = null
+      }
+    }
+  }, [])
 
   const feedsMap = useMemo(() => {
     const map = new Map<string, Feed>()
@@ -248,34 +304,28 @@ export function EntryList({
     lastUnreadCleanupKeyRef.current = unreadCleanupKey
   }, [entries, unreadOnly, isLoading, unreadCleanupKey, removeFromUnreadList])
 
-  // Mobile: measure the list content container position in the document so
-  // useWindowVirtualizer knows where the list starts (below the sticky header).
-  const listContentRef = useRef<HTMLDivElement>(null)
-  const [scrollMargin, setScrollMargin] = useState(TOP_BAR_HEIGHT)
+  const markReadOnScrollEnabled = generalSettings?.markReadOnScroll ?? false
 
-  useLayoutEffect(() => {
-    if (!isMobile || !listContentRef.current) return
-    // getBoundingClientRect().top at scrollY=0 equals the document-relative offset.
-    const rect = listContentRef.current.getBoundingClientRect()
-    setScrollMargin(rect.top + window.scrollY)
-  }, [isMobile])
+  // Blank spacer rows added at the end so users can scroll the last real entry
+  // out of view, allowing it to be marked as read before auto-jumping.
+  const scrollPaddingCount =
+    markReadOnScrollEnabled && !hasNextPage && !isFetchingNextPage && entries.length > 0
+      ? SCROLL_PADDING_COUNT
+      : 0
+  const totalVirtualCount = entries.length + scrollPaddingCount
 
-  // Window virtualizer for mobile: scroll happens on window so Android Chrome
-  // can collapse the address bar / bottom toolbar while browsing the article list.
-  // Both hooks must always be called (no conditional hooks), but only one is used.
-  // count:0 effectively disables the unused virtualizer (it renders no items and
-  // ignores scroll events from its scroll element).
+  // Mobile: window virtualizer (enables browser address bar auto-hide)
+  // Desktop: div virtualizer (contained three-column layout)
   const windowVirtualizer = useWindowVirtualizer({
-    count: isMobile ? entries.length : 0,
+    count: isMobile ? totalVirtualCount : 0,
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
     overscan: 5,
-    scrollMargin,
+    scrollMargin: listContentRef.current?.offsetTop ?? 0,
+    enabled: !!isMobile && isActive,
   })
 
-  // Element virtualizer for desktop: scroll happens inside the column container.
-  // count:0 disables it on mobile (see note above about conditional hooks).
-  const elementVirtualizer = useVirtualizer({
-    count: isMobile ? 0 : entries.length,
+  const divVirtualizer = useVirtualizer({
+    count: isMobile ? 0 : totalVirtualCount,
     getScrollElement: () => containerRef.current,
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
     overscan: 5,
@@ -283,13 +333,48 @@ export function EntryList({
     initialOffset: isMobile ? 0 : (entryListScrollPositions.get(scrollKey) ?? 0),
   })
 
-  const virtualizer = isMobile ? windowVirtualizer : elementVirtualizer
+  const virtualizer = isMobile ? windowVirtualizer : divVirtualizer
 
   const virtualItems = virtualizer.getVirtualItems()
 
+  // Track entries individually marked as read by scrolling past the top bar.
+  // Using a Set (rather than a boolean) lets us require ALL initially-unread
+  // entries to have scrolled past before triggering the auto-jump.
+  const markedReadByScrollRef = useRef(new Set<string>())
+  const hasTriggeredAutoJumpRef = useRef(false)
+
+  // Auto-jump to next feed once every entry that was unread on load has
+  // individually scrolled past the top bar.  The spacer rows provide the
+  // extra scroll distance needed for the last entry to clear the bar.
+  useEffect(() => {
+    if (!markReadOnScrollEnabled) return
+    if (hasTriggeredAutoJumpRef.current) return
+    if (selection.type !== 'feed' && selection.type !== 'folder') return
+    if (!onMarkAllReadAndGoNextFeed) return
+    if (scrollPaddingCount === 0) return
+    if (markedReadByScrollRef.current.size === 0) return
+    // Every entry must be either already-read on load OR have been scrolled past
+    const allScrolledPast = entries.every(
+      (e) => e.read || markedReadByScrollRef.current.has(e.id)
+    )
+    if (!allScrolledPast) return
+    hasTriggeredAutoJumpRef.current = true
+    onMarkAllReadAndGoNextFeed()
+  }, [virtualItems, entries, scrollPaddingCount, markReadOnScrollEnabled, selection.type, onMarkAllReadAndGoNextFeed])
+
   const handleMarkReadOnScroll = useCallback((entryId: string) => {
+    markedReadByScrollRef.current.add(entryId)
     markAsRead({ id: entryId, read: true, skipInvalidate: true })
   }, [markAsRead])
+
+  // Scroll selected entry into view on desktop when selectedEntryId changes
+  useEffect(() => {
+    if (isMobile) return
+    if (!selectedEntryId) return
+    const idx = entries.findIndex((e) => e.id === selectedEntryId)
+    if (idx < 0) return
+    virtualizer.scrollToIndex(idx, { align: 'auto' })
+  }, [isMobile, selectedEntryId, entries, virtualizer])
 
   const handleEntryClick = useCallback((entry: Entry) => {
     const viewMode = getFeedExplicitViewMode(entry.feedId)
@@ -304,13 +389,9 @@ export function EntryList({
   }, [getFeedExplicitViewMode, keepReadUntilExit, markAsRead, onSelectEntry])
 
   useEffect(() => {
-    const lastItem = virtualItems.at(-1)
-    if (!lastItem) return
+    maybeFetchNextPage()
+  }, [entries.length, maybeFetchNextPage])
 
-    if (lastItem.index >= entries.length - 5 && hasNextPage && !isFetchingNextPage) {
-      fetchNextPage()
-    }
-  }, [virtualItems, entries.length, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   // Function to trigger batch translation for pending entries
   const triggerBatchTranslation = useCallback(() => {
@@ -344,6 +425,15 @@ export function EntryList({
     }
   }, [targetLanguage])
 
+  const queueEntryForTranslation = useCallback((entry: Entry) => {
+    pendingTranslation.current.set(entry.id, entry)
+
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current)
+    }
+    debounceTimer.current = setTimeout(triggerBatchTranslation, 500)
+  }, [triggerBatchTranslation])
+
   // Schedule entry for translation when visible
   const scheduleTranslation = useCallback(
     (entry: Entry) => {
@@ -357,46 +447,80 @@ export function EntryList({
       // Skip if user manually disabled translation for this article
       if (translationActions.isDisabled(entry.id)) return
 
-      // Check if needs translation
-      const summary = entry.content ? stripHtml(entry.content).slice(0, 200) : null
-      if (!needsTranslation(entry.title || '', summary, targetLanguage)) {
-        translatedEntries.current.add(entry.id)
+      if (pendingTranslation.current.has(entry.id) || pendingDetection.current.has(entry.id)) {
         return
       }
 
-      // Add to pending
-      pendingTranslation.current.set(entry.id, entry)
+      const summary = entry.content ? stripHtml(entry.content).slice(0, 200) : null
+      const session = translationSession.current
+      pendingDetection.current.add(entry.id)
 
-      // Debounce batch translation
-      if (debounceTimer.current) {
-        clearTimeout(debounceTimer.current)
-      }
-      debounceTimer.current = setTimeout(triggerBatchTranslation, 500)
+      void needsTranslationAsync(entry.title || '', summary, targetLanguage)
+        .then((shouldTranslate) => {
+          if (translationSession.current !== session) return
+
+          if (!shouldTranslate) {
+            translatedEntries.current.add(entry.id)
+            return
+          }
+
+          queueEntryForTranslation(entry)
+        })
+        .catch(() => {
+          if (translationSession.current !== session) return
+          queueEntryForTranslation(entry)
+        })
+        .finally(() => {
+          if (translationSession.current === session) {
+            pendingDetection.current.delete(entry.id)
+          }
+        })
     },
-    [autoTranslate, targetLanguage, triggerBatchTranslation]
+    [autoTranslate, targetLanguage, queueEntryForTranslation]
   )
 
-  // Trigger translation for visible items and selected entry
+  // Trigger translation for real visible items and selected entry
   useEffect(() => {
     if (!autoTranslate) return
 
-    const visibleEntryIds = new Set<string>()
-    for (const virtualRow of virtualItems) {
-      const entry = entries[virtualRow.index]
-      if (entry) {
-        visibleEntryIds.add(entry.id)
+    const node = containerRef.current
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      for (const entry of entries.slice(0, 20)) {
         scheduleTranslation(entry)
       }
+      return
     }
 
-    // Selected entry may be outside the visible range, still needs translation
-    if (selectedEntryId && !visibleEntryIds.has(selectedEntryId)) {
+    const observer = new IntersectionObserver(
+      (items) => {
+        for (const item of items) {
+          if (!item.isIntersecting) continue
+
+          const index = Number((item.target as HTMLElement).dataset.index)
+          const entry = entries[index]
+          if (entry) {
+            scheduleTranslation(entry)
+          }
+        }
+      },
+      { root: node, rootMargin: '200px 0px' }
+    )
+
+    for (const item of node.querySelectorAll<HTMLElement>('[data-index]')) {
+      observer.observe(item)
+    }
+
+    if (selectedEntryId) {
       const selectedEntry = entries.find((e) => e.id === selectedEntryId)
       if (selectedEntry) {
         scheduleTranslation(selectedEntry)
       }
     }
-  }, [virtualItems, entries, autoTranslate, scheduleTranslation, selectedEntryId])
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [entries, autoTranslate, scheduleTranslation, selectedEntryId])
 
   const title = useMemo(() => {
     switch (selection.type) {
@@ -560,27 +684,40 @@ export function EntryList({
     onMarkAllReadAndGoNextFeed?.()
   }, [onMarkAllReadAndGoNextFeed])
 
-  return (
-    <div ref={listWrapperRef} className={cn("relative flex flex-col", !isMobile && "h-full")}>
-      <EntryListHeader
-        title={title}
-        unreadCount={unreadCount}
-        unreadOnly={unreadOnly}
-        onToggleUnreadOnly={onToggleUnreadOnly}
-        onMarkAllRead={onMarkAllRead}
-        viewMenuFeedId={selection.type === 'feed' ? selection.feedId : undefined}
-        viewMenuDefaultMode={(generalSettings?.autoReadability ?? false) ? 'readability' : 'normal'}
-        scrollToTopScope="entrylist"
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
-        isTablet={isTablet}
-        onToggleSidebar={onToggleSidebar}
-        sidebarVisible={sidebarVisible}
-      />
+  // ─── Mobile layout ───────────────────────────────────────────────────────
+  // The list is rendered in normal document flow so that **window** is the
+  // scroll container.  Mobile browsers (Chrome, Safari) only auto-hide the
+  // address bar / toolbar when the *window* itself scrolls – not when an
+  // inner div with overflow:auto scrolls.
+  //
+  // useWindowVirtualizer is used instead of useVirtualizer; it listens to
+  // window scroll events and positions items relative to a scrollMargin
+  // derived from listContentRef.offsetTop (the sticky header height).
+  if (isMobile) {
+    const scrollMargin = windowVirtualizer.options.scrollMargin
+    return (
+      <div ref={listWrapperRef}>
+        {/* Sticky header inside the document flow.
+             safe-area-top pads content below the device status bar (notch). */}
+        <div className="sticky top-0 z-10 bg-background safe-area-top">
+          <EntryListHeader
+            title={title}
+            unreadCount={unreadCount}
+            unreadOnly={unreadOnly}
+            onToggleUnreadOnly={onToggleUnreadOnly}
+            onMarkAllRead={onMarkAllRead}
+            viewMenuFeedId={selection.type === 'feed' ? selection.feedId : undefined}
+            viewMenuDefaultMode={
+              selection.type === 'feed'
+                ? (feedsMap.get(selection.feedId)?.viewMode ?? ((generalSettings?.autoReadability ?? false) ? 'readability' : 'normal'))
+                : ((generalSettings?.autoReadability ?? false) ? 'readability' : 'normal')
+            }
+            scrollToTopScope="entrylist"
+            isMobile={isMobile}
+            onMenuClick={onMenuClick}
+          />
+        </div>
 
-      {isMobile ? (
-        // Mobile: window-scroll mode — no nested scroll container so Android Chrome
-        // can collapse the address bar / bottom toolbar as the user scrolls the list.
         <div ref={listContentRef}>
           {isLoading ? (
             <EntryListSkeleton />
@@ -592,23 +729,27 @@ export function EntryList({
               style={{ height: windowVirtualizer.getTotalSize() }}
             >
               <div
-                className="absolute top-0 left-0 w-full"
                 style={{
-                  // For useWindowVirtualizer, item.start values include scrollMargin
-                  // (they are document-relative), so we subtract scrollMargin to get
-                  // the position relative to this container (which starts at scrollMargin).
-                  // Desktop uses useVirtualizer where start is already container-relative.
-                  transform: `translateY(${(virtualItems[0]?.start ?? 0) - windowVirtualizer.options.scrollMargin}px)`,
+                  transform: `translateY(${(virtualItems[0]?.start ?? 0) - scrollMargin}px)`,
                 }}
               >
                 {virtualItems.map((virtualRow) => {
+                  if (virtualRow.index >= entries.length) {
+                    return (
+                      <div
+                        key={`spacer-${virtualRow.index}`}
+                        ref={windowVirtualizer.measureElement}
+                        data-index={virtualRow.index}
+                        style={{ height: ESTIMATED_ITEM_HEIGHT }}
+                      />
+                    )
+                  }
                   const entry = entries[virtualRow.index]
                   if (!entry) return null
-
                   return (
                     <EntryListItem
                       key={entry.id}
-                      ref={virtualizer.measureElement}
+                      ref={windowVirtualizer.measureElement}
                       data-index={virtualRow.index}
                       entry={entry}
                       feed={feedsMap.get(entry.feedId)}
@@ -629,64 +770,138 @@ export function EntryList({
 
           {isFetchingNextPage && <LoadingMore />}
         </div>
-      ) : (
-        // Desktop: element-scroll mode — scroll happens inside the column container.
-        <ScrollAreaPrimitive.Root className="relative min-h-0 flex-1 overflow-hidden">
-          <div
-            ref={containerRef}
-            className="h-full overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
-          >
-            {isLoading ? (
-              <EntryListSkeleton />
-            ) : entries.length === 0 ? (
-              <EntryListEmpty />
-            ) : (
-              <div
-                className="relative w-full"
-                style={{ height: virtualizer.getTotalSize() }}
-              >
-                <div
-                  style={{
-                    transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
-                  }}
-                >
-                  {virtualItems.map((virtualRow) => {
-                    const entry = entries[virtualRow.index]
-                    if (!entry) return null
 
+        {showMarkAllReadFooter && (
+          <button
+            ref={markReadButtonRef}
+            type="button"
+            onClick={handleMarkReadClick}
+            onPointerDown={handleMarkReadPointerDown}
+            title={t('entry.mark_all_read')}
+            aria-label={t('entry.mark_all_read')}
+            className={cn(
+              'fixed z-30 flex size-12 items-center justify-center rounded-full',
+              'bg-muted text-foreground shadow-lg',
+              'transition-colors hover:bg-item-hover active:scale-95',
+              'touch-none'
+            )}
+            style={{
+              left: markReadPosition?.x ?? 16,
+              top: markReadPosition?.y ?? 16,
+              opacity: markReadPosition ? 1 : 0,
+              pointerEvents: markReadPosition ? 'auto' : 'none',
+            }}
+          >
+            <svg
+              className="size-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 6 7 17l-5-5" />
+              <path d="m22 10-7.5 7.5L13 16" />
+            </svg>
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  // ─── Desktop / tablet layout ──────────────────────────────────────────────
+  return (
+    <div ref={listWrapperRef} className="relative flex h-full flex-col">
+      <EntryListHeader
+        title={title}
+        unreadCount={unreadCount}
+        unreadOnly={unreadOnly}
+        onToggleUnreadOnly={onToggleUnreadOnly}
+        onMarkAllRead={onMarkAllRead}
+        viewMenuFeedId={selection.type === 'feed' ? selection.feedId : undefined}
+        viewMenuDefaultMode={
+          selection.type === 'feed'
+            ? (feedsMap.get(selection.feedId)?.viewMode ?? ((generalSettings?.autoReadability ?? false) ? 'readability' : 'normal'))
+            : ((generalSettings?.autoReadability ?? false) ? 'readability' : 'normal')
+        }
+        scrollToTopScope="entrylist"
+        isMobile={isMobile}
+        onMenuClick={onMenuClick}
+        isTablet={isTablet}
+        onToggleSidebar={onToggleSidebar}
+        sidebarVisible={sidebarVisible}
+      />
+
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div
+          ref={containerRef}
+          data-testid="entry-list-viewport"
+          className={cn(
+            'h-full w-full overflow-x-hidden overflow-y-auto rounded-[inherit] [overflow-anchor:none]',
+            // On desktop keep scroll containment; on mobile omit it so Chrome
+            // Android can promote this div to "implicit root scroller" and
+            // auto-hide the address bar.  Chrome explicitly rejects elements
+            // whose overscroll-behavior-y !== auto as root scroller candidates.
+            !isMobile && 'overscroll-y-contain',
+          )}
+        >
+          {isLoading ? (
+            <EntryListSkeleton />
+          ) : entries.length === 0 ? (
+            <EntryListEmpty />
+          ) : (
+            <div
+              className="relative w-full"
+              style={{ height: virtualizer.getTotalSize() }}
+            >
+              <div
+                style={{
+                  transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
+                }}
+              >
+                {virtualItems.map((virtualRow) => {
+                  if (virtualRow.index >= entries.length) {
                     return (
-                      <EntryListItem
-                        key={entry.id}
+                      <div
+                        key={`spacer-${virtualRow.index}`}
                         ref={virtualizer.measureElement}
                         data-index={virtualRow.index}
-                        entry={entry}
-                        feed={feedsMap.get(entry.feedId)}
-                        isSelected={entry.id === selectedEntryId}
-                        onClick={() => handleEntryClick(entry)}
-                        autoTranslate={autoTranslate}
-                        targetLanguage={targetLanguage}
-                        markReadOnScroll={generalSettings?.markReadOnScroll ?? false}
-                        scrollRootRef={containerRef}
-                        topOffset={TOP_BAR_HEIGHT}
-                        onMarkRead={handleMarkReadOnScroll}
+                        style={{ height: ESTIMATED_ITEM_HEIGHT }}
                       />
                     )
-                  })}
-                </div>
+                  }
+                  const entry = entries[virtualRow.index]
+                  if (!entry) return null
+
+                  return (
+                    <EntryListItem
+                      key={entry.id}
+                      ref={virtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      entry={entry}
+                      feed={feedsMap.get(entry.feedId)}
+                      isSelected={entry.id === selectedEntryId}
+                      onClick={() => handleEntryClick(entry)}
+                      autoTranslate={autoTranslate}
+                      targetLanguage={targetLanguage}
+                      markReadOnScroll={generalSettings?.markReadOnScroll ?? false}
+                      scrollRootRef={containerRef}
+                      topOffset={TOP_BAR_HEIGHT}
+                      onMarkRead={handleMarkReadOnScroll}
+                    />
+                  )
+                })}
               </div>
-            )}
+            </div>
+          )}
 
-            {isFetchingNextPage && <LoadingMore />}
+          {isFetchingNextPage && <LoadingMore />}
 
-          </div>
-          <ScrollBar />
-          <ScrollAreaPrimitive.Corner />
-        </ScrollAreaPrimitive.Root>
-      )}
+        </div>
+      </div>
 
-      {/* Floating "Mark All Read + Next Feed" button — desktop only.
-          On mobile the mark-all-read action is available in the header dropdown. */}
-      {!isMobile && showMarkAllReadFooter && (
+      {showMarkAllReadFooter && (
         <button
           ref={markReadButtonRef}
           type="button"

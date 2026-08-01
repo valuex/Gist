@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -9,15 +10,13 @@ import (
 
 // AnthropicProvider implements Provider for Anthropic API.
 type AnthropicProvider struct {
-	client            anthropic.Client
-	model             string
-	thinkingSupported bool
-	thinking          bool
-	thinkingBudget    int
+	client         anthropic.Client
+	model          string
+	requestOptions map[string]any
 }
 
 // NewAnthropicProvider creates a new Anthropic provider.
-func NewAnthropicProvider(apiKey, baseURL, model string, thinkingSupported, thinking bool, thinkingBudget int) (*AnthropicProvider, error) {
+func NewAnthropicProvider(apiKey, baseURL, model string, requestOptions map[string]any) (*AnthropicProvider, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -26,11 +25,9 @@ func NewAnthropicProvider(apiKey, baseURL, model string, thinkingSupported, thin
 	}
 	client := anthropic.NewClient(opts...)
 	return &AnthropicProvider{
-		client:            client,
-		model:             model,
-		thinkingSupported: thinkingSupported,
-		thinking:          thinking,
-		thinkingBudget:    thinkingBudget,
+		client:         client,
+		model:          model,
+		requestOptions: requestOptions,
 	}, nil
 }
 
@@ -43,23 +40,8 @@ func (p *AnthropicProvider) Test(ctx context.Context) (string, error) {
 		},
 	}
 
-	// Configure thinking based on support and preference
-	if p.thinkingSupported {
-		if p.thinking && p.thinkingBudget > 0 {
-			params.MaxTokens = int64(p.thinkingBudget + 1024)
-			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(p.thinkingBudget))
-		} else {
-			params.MaxTokens = 50
-			// Explicitly disable thinking (API defaults to enabled for some models)
-			disabled := anthropic.NewThinkingConfigDisabledParam()
-			params.Thinking = anthropic.ThinkingConfigParamUnion{
-				OfDisabled: &disabled,
-			}
-		}
-	} else {
-		// Model does not support thinking, do not pass any thinking params
-		params.MaxTokens = 50
-	}
+	params.MaxTokens = 50
+	applyRequestOptions(&params, p.requestOptions)
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
@@ -103,21 +85,8 @@ func (p *AnthropicProvider) SummarizeStream(ctx context.Context, systemPrompt, c
 			}
 		}
 
-		// Configure thinking based on support and preference
-		if p.thinkingSupported {
-			if p.thinking && p.thinkingBudget > 0 {
-				params.MaxTokens = int64(p.thinkingBudget + 64000)
-				params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(p.thinkingBudget))
-			} else {
-				params.MaxTokens = 64000
-				disabled := anthropic.NewThinkingConfigDisabledParam()
-				params.Thinking = anthropic.ThinkingConfigParamUnion{
-					OfDisabled: &disabled,
-				}
-			}
-		} else {
-			params.MaxTokens = 64000
-		}
+		params.MaxTokens = 64000
+		applyRequestOptions(&params, p.requestOptions)
 
 		stream := p.client.Messages.NewStreaming(ctx, params)
 		defer stream.Close() // Close HTTP connection when done or cancelled
@@ -149,7 +118,9 @@ func (p *AnthropicProvider) SummarizeStream(ctx context.Context, systemPrompt, c
 	return textCh, errCh
 }
 
-// Complete generates a response without streaming.
+// Complete generates a response using streaming internally.
+// Anthropic API requires streaming for operations that may take longer than 10 minutes,
+// so we use streaming and collect the full response.
 func (p *AnthropicProvider) Complete(ctx context.Context, systemPrompt, content string) (string, error) {
 	params := anthropic.MessageNewParams{
 		Model: anthropic.Model(p.model),
@@ -164,33 +135,27 @@ func (p *AnthropicProvider) Complete(ctx context.Context, systemPrompt, content 
 		}
 	}
 
-	// Configure thinking based on support and preference
-	if p.thinkingSupported {
-		if p.thinking && p.thinkingBudget > 0 {
-			params.MaxTokens = int64(p.thinkingBudget + 64000)
-			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(p.thinkingBudget))
-		} else {
-			params.MaxTokens = 64000
-			disabled := anthropic.NewThinkingConfigDisabledParam()
-			params.Thinking = anthropic.ThinkingConfigParamUnion{
-				OfDisabled: &disabled,
+	params.MaxTokens = 64000
+	applyRequestOptions(&params, p.requestOptions)
+
+	var result strings.Builder
+	stream := p.client.Messages.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	for stream.Next() {
+		event := stream.Current()
+		switch eventVariant := event.AsAny().(type) {
+		case anthropic.ContentBlockDeltaEvent:
+			switch deltaVariant := eventVariant.Delta.AsAny().(type) {
+			case anthropic.TextDelta:
+				result.WriteString(deltaVariant.Text)
 			}
 		}
-	} else {
-		params.MaxTokens = 64000
 	}
 
-	resp, err := p.client.Messages.New(ctx, params)
-	if err != nil {
+	if err := stream.Err(); err != nil {
 		return "", err
 	}
 
-	// Extract text content from response (skip thinking blocks)
-	for _, block := range resp.Content {
-		switch v := block.AsAny().(type) {
-		case anthropic.TextBlock:
-			return v.Text, nil
-		}
-	}
-	return "", nil
+	return result.String(), nil
 }

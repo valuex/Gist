@@ -1,4 +1,5 @@
 export type ContentType = 'article' | 'picture' | 'notification'
+export type FeedViewMode = 'normal' | 'readability' | 'browser'
 
 export interface Folder {
   id: string
@@ -16,8 +17,10 @@ export interface Feed {
   url: string
   siteUrl?: string
   description?: string
+  summaryPromptReminder?: string
   iconPath?: string
   type: ContentType
+  viewMode?: FeedViewMode
   etag?: string
   lastModified?: string
   errorMessage?: string

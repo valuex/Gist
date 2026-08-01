@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	repositorymock "gist/backend/internal/repository/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"gist/backend/internal/model"
 	"gist/backend/internal/service/ai"
@@ -297,6 +299,63 @@ func TestAIService_GetCachedSummary_Error(t *testing.T) {
 	require.Contains(t, err.Error(), "database error")
 }
 
+func TestAIService_BuildSummarizeSystemPrompt_UsesFeedReminder(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	settingsRepo := newSettingsRepoStub()
+	settingsRepo.data[service.KeyAISummaryLanguage] = "en-US"
+	entryRepo := repositorymock.NewMockEntryRepository(ctrl)
+	feedRepo := repositorymock.NewMockFeedRepository(ctrl)
+
+	reminder := "Focus on benchmark numbers"
+	entryRepo.EXPECT().GetByID(gomock.Any(), int64(123)).Return(model.Entry{ID: 123, FeedID: 7}, nil)
+	feedRepo.EXPECT().GetByID(gomock.Any(), int64(7)).Return(model.Feed{
+		ID:                    7,
+		SummaryPromptReminder: &reminder,
+	}, nil)
+
+	svc := service.NewAIServiceWithFeedContext(
+		&summaryRepoStub{},
+		&translationRepoStub{},
+		&listTranslationRepoStub{},
+		settingsRepo,
+		ai.NewRateLimiter(100),
+		entryRepo,
+		feedRepo,
+	)
+
+	prompt := service.BuildAISummarizeSystemPromptForTest(svc, context.Background(), 123, "Title")
+	require.Contains(t, prompt, "<system-reminder>\nFocus on benchmark numbers\n</system-reminder>")
+}
+
+func TestAIService_BuildSummarizeSystemPrompt_FallbackOnFeedLookupError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	settingsRepo := newSettingsRepoStub()
+	settingsRepo.data[service.KeyAISummaryLanguage] = "en-US"
+	entryRepo := repositorymock.NewMockEntryRepository(ctrl)
+	feedRepo := repositorymock.NewMockFeedRepository(ctrl)
+
+	entryRepo.EXPECT().GetByID(gomock.Any(), int64(123)).Return(model.Entry{ID: 123, FeedID: 7}, nil)
+	feedRepo.EXPECT().GetByID(gomock.Any(), int64(7)).Return(model.Feed{}, errors.New("feed lookup failed"))
+
+	svc := service.NewAIServiceWithFeedContext(
+		&summaryRepoStub{},
+		&translationRepoStub{},
+		&listTranslationRepoStub{},
+		settingsRepo,
+		ai.NewRateLimiter(100),
+		entryRepo,
+		feedRepo,
+	)
+
+	prompt := service.BuildAISummarizeSystemPromptForTest(svc, context.Background(), 123, "Title")
+	require.NotContains(t, prompt, "<system-reminder>")
+	require.Contains(t, prompt, "<target_language>English</target_language>")
+}
+
 // TestAIService_TranslateBlocks_ContextCancelled tests the BUG fix:
 // When context is cancelled, TranslateBlocks should exit gracefully without
 // continuing to process blocks or saving incomplete cache.
@@ -354,6 +413,7 @@ func TestAIService_TranslateBlocks_ContextCancelledDuringProcessing(t *testing.T
 
 	// Create context that will be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Start TranslateBlocks
 	blockInfos, resultCh, errCh, err := svc.TranslateBlocks(ctx, 1, "<p>Block 1</p><p>Block 2</p><p>Block 3</p>", "title", false)

@@ -17,6 +17,7 @@ import {
   DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu'
 import { useFeedViewStore, type FeedViewMode } from '@/stores/feed-view-store'
+import { useUpdateFeedViewMode } from '@/hooks/useFeeds'
 
 interface EntryListHeaderProps {
   title: string
@@ -56,6 +57,13 @@ export function EntryListHeader({
     return s.getEffectiveMode(viewMenuFeedId, viewMenuDefaultMode ?? 'normal')
   })
   const setFeedViewMode = useFeedViewStore((s) => s.setMode)
+  const { mutate: updateFeedViewMode } = useUpdateFeedViewMode()
+
+  const handleSelectViewMode = (mode: FeedViewMode) => {
+    if (!viewMenuFeedId) return
+    setFeedViewMode(viewMenuFeedId, mode)
+    updateFeedViewMode({ id: viewMenuFeedId, viewMode: mode })
+  }
 
   return (
     <div className={cn(
@@ -171,17 +179,17 @@ export function EntryListHeader({
                     <ViewModeItem
                       active={feedViewMode === 'browser'}
                       label={t('entry.view_browser')}
-                      onSelect={() => setFeedViewMode(viewMenuFeedId, 'browser')}
+                      onSelect={() => handleSelectViewMode('browser')}
                     />
                     <ViewModeItem
                       active={feedViewMode === 'readability'}
                       label={t('entry.view_readability')}
-                      onSelect={() => setFeedViewMode(viewMenuFeedId, 'readability')}
+                      onSelect={() => handleSelectViewMode('readability')}
                     />
                     <ViewModeItem
                       active={feedViewMode === 'normal'}
                       label={t('entry.view_normal')}
-                      onSelect={() => setFeedViewMode(viewMenuFeedId, 'normal')}
+                      onSelect={() => handleSelectViewMode('normal')}
                     />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>

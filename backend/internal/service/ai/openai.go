@@ -12,15 +12,13 @@ import (
 
 // OpenAIProvider implements Provider for OpenAI Responses API.
 type OpenAIProvider struct {
-	client            openai.Client
-	model             string
-	thinkingSupported bool
-	thinking          bool
-	reasoningEffort   string
+	client         openai.Client
+	model          string
+	requestOptions map[string]any
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
-func NewOpenAIProvider(apiKey, baseURL, model string, thinkingSupported, thinking bool, reasoningEffort string) (*OpenAIProvider, error) {
+func NewOpenAIProvider(apiKey, baseURL, model string, requestOptions map[string]any) (*OpenAIProvider, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -30,11 +28,9 @@ func NewOpenAIProvider(apiKey, baseURL, model string, thinkingSupported, thinkin
 
 	client := openai.NewClient(opts...)
 	return &OpenAIProvider{
-		client:            client,
-		model:             model,
-		thinkingSupported: thinkingSupported,
-		thinking:          thinking,
-		reasoningEffort:   reasoningEffort,
+		client:         client,
+		model:          model,
+		requestOptions: requestOptions,
 	}, nil
 }
 
@@ -49,12 +45,7 @@ func (p *OpenAIProvider) Test(ctx context.Context) (string, error) {
 		},
 	}
 
-	// Only pass reasoning params when the model supports thinking
-	if p.thinkingSupported && p.thinking && p.reasoningEffort != "" {
-		params.Reasoning = shared.ReasoningParam{
-			Effort: shared.ReasoningEffort(p.reasoningEffort),
-		}
-	}
+	applyRequestOptions(&params, p.requestOptions)
 
 	resp, err := p.client.Responses.New(ctx, params)
 	if err != nil {
@@ -94,26 +85,20 @@ func (p *OpenAIProvider) SummarizeStream(ctx context.Context, systemPrompt, cont
 		defer close(textCh)
 		defer close(errCh)
 
-		// Build input messages
-		inputItems := []responses.ResponseInputItemUnionParam{}
-		if systemPrompt != "" {
-			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(systemPrompt, responses.EasyInputMessageRoleSystem))
-		}
-		inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser))
-
 		params := responses.ResponseNewParams{
 			Model: shared.ResponsesModel(p.model),
 			Input: responses.ResponseNewParamsInputUnion{
-				OfInputItemList: responses.ResponseInputParam(inputItems),
+				OfInputItemList: responses.ResponseInputParam{
+					responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser),
+				},
 			},
 		}
 
-		// Only pass reasoning params when the model supports thinking
-		if p.thinkingSupported && p.thinking && p.reasoningEffort != "" {
-			params.Reasoning = shared.ReasoningParam{
-				Effort: shared.ReasoningEffort(p.reasoningEffort),
-			}
+		if systemPrompt != "" {
+			params.Instructions = openai.String(systemPrompt)
 		}
+
+		applyRequestOptions(&params, p.requestOptions)
 
 		stream := p.client.Responses.NewStreaming(ctx, params)
 		defer stream.Close()
@@ -145,26 +130,20 @@ func (p *OpenAIProvider) SummarizeStream(ctx context.Context, systemPrompt, cont
 
 // Complete generates a response without streaming.
 func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, content string) (string, error) {
-	// Build input messages
-	inputItems := []responses.ResponseInputItemUnionParam{}
-	if systemPrompt != "" {
-		inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(systemPrompt, responses.EasyInputMessageRoleSystem))
-	}
-	inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser))
-
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(p.model),
 		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: responses.ResponseInputParam(inputItems),
+			OfInputItemList: responses.ResponseInputParam{
+				responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleUser),
+			},
 		},
 	}
 
-	// Only pass reasoning params when the model supports thinking
-	if p.thinkingSupported && p.thinking && p.reasoningEffort != "" {
-		params.Reasoning = shared.ReasoningParam{
-			Effort: shared.ReasoningEffort(p.reasoningEffort),
-		}
+	if systemPrompt != "" {
+		params.Instructions = openai.String(systemPrompt)
 	}
+
+	applyRequestOptions(&params, p.requestOptions)
 
 	resp, err := p.client.Responses.New(ctx, params)
 	if err != nil {
@@ -189,4 +168,15 @@ func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, content str
 	}
 
 	return result.String(), nil
+}
+
+type extraFieldsSetter interface {
+	SetExtraFields(map[string]any)
+}
+
+func applyRequestOptions(params extraFieldsSetter, options map[string]any) {
+	if len(options) == 0 {
+		return
+	}
+	params.SetExtraFields(options)
 }

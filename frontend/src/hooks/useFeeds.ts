@@ -1,12 +1,21 @@
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listFeeds, deleteFeed, updateFeed, updateFeedType } from '@/api'
-import type { ContentType } from '@/types/api'
+import { listFeeds, deleteFeed, updateFeed, updateFeedType, updateFeedViewMode } from '@/api'
+import type { ContentType, FeedViewMode } from '@/types/api'
+import { feedViewActions } from '@/stores/feed-view-store'
 
 export function useFeeds() {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['feeds'],
     queryFn: () => listFeeds(),
   })
+
+  useEffect(() => {
+    if (!query.data) return
+    feedViewActions.syncModesFromFeeds(query.data)
+  }, [query.data])
+
+  return query
 }
 
 export function useDeleteFeed() {
@@ -23,8 +32,17 @@ export function useDeleteFeed() {
 export function useUpdateFeed() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (payload: { id: string; title: string; folderId?: string }) =>
-      updateFeed(payload.id, { title: payload.title, folderId: payload.folderId }),
+    mutationFn: (payload: {
+      id: string
+      title: string
+      folderId?: string
+      summaryPromptReminder?: string
+    }) =>
+      updateFeed(payload.id, {
+        title: payload.title,
+        folderId: payload.folderId,
+        summaryPromptReminder: payload.summaryPromptReminder,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['feeds'] })
     },
@@ -36,6 +54,17 @@ export function useUpdateFeedType() {
   return useMutation({
     mutationFn: (payload: { id: string; type: ContentType }) =>
       updateFeedType(payload.id, payload.type),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['feeds'] })
+    },
+  })
+}
+
+export function useUpdateFeedViewMode() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: { id: string; viewMode?: FeedViewMode }) =>
+      updateFeedViewMode(payload.id, payload.viewMode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['feeds'] })
     },

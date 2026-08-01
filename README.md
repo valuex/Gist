@@ -8,6 +8,9 @@
 
 ![desktop](docs/images/desktop.png)
 
+移动端截图  
+<img width="1938" height="1422" alt="image" src="https://github.com/user-attachments/assets/431221a6-0cc5-40d8-8428-b3e946f7ccc5" />
+
 ## 功能特性
 
 - 全格式订阅，支持 RSS 2.0 / Atom / JSON Feed
@@ -15,7 +18,7 @@
 - AI 摘要与翻译，支持 OpenAI / Anthropic / 兼容接口 (BYOK)
 - 文件夹分层管理与内容分类
 - 浅色 / 深色 / 跟随系统主题
-- PWA，可安装到桌面和移动设备
+- PWA，可安装到桌面和移动设备，滚动时可触发终端浏览器地址栏和工具栏隐藏，实现阅读界面最大化
 - 多语言 (简体中文 / English)
 
 ## 移动端浏览器 UI 收起行为（Android Chrome）
@@ -58,6 +61,9 @@ services:
 
 访问 `http://localhost:8080`，数据持久化在 `./data` 目录。
 
+###  通过镜像包安装
+参照重新部署说明：[link(https://github.com/valuex/Gist/blob/main/reinstall_using_tar.md)
+
 ### Docker Run
 
 ```bash
@@ -73,8 +79,8 @@ docker run -d \
 | 标签 | 说明 |
 |------|------|
 | `latest` | 最新稳定版 |
-| `1.0.0` | 指定版本 |
-| `1.0` | 该 minor 版本的最新 patch |
+| `1.2.0` | 指定版本 |
+| `1.2` | 该 minor 版本的最新 patch |
 | `1` | 该 major 版本的最新 minor |
 | `develop` | 每次推送 `main` 分支自动构建 |
 
@@ -129,3 +135,12 @@ bun run lint
 ## 许可证
 
 [GPL-2.0](./LICENSE)
+
+## 便捷操作特性
+- 特定feed支持三种视图自定义：常规模式（显示rss feed提供的内容）；阅读模式（显示全文）；浏览器（将文章在新tab打开，适用于需要登录查看全文的网站）
+- 文章列表右滑显示feed列表
+- 自动触发隐藏终端浏览器的地址栏和工具栏，实现阅读界面最大化
+- 滚动出顶部工具栏时自动将文章标记为已读
+- 浮动按钮便于将整个目录或feed下文章标记为已读
+- 记住feed文章列表和文章阅读位置，便于继续从上次位置开始阅读
+

@@ -1,5 +1,4 @@
-/// <reference types="vitest" />
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -48,8 +47,14 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Only precache essential files, not all JS chunks (shiki has 300+ language files)
-        globPatterns: ['index.html', 'manifest.webmanifest', 'assets/app-*.js', 'assets/index-*.css', 'assets/*-vendor-*.js', '*.png', '*.svg'],
+        globPatterns: [
+          'index.html',
+          'manifest.webmanifest',
+          'assets/*.js',
+          'assets/*.css',
+          '*.png',
+          '*.svg',
+        ],
         navigateFallback: 'index.html',
         navigateFallbackDenylist: [/^\/api/],
         cleanupOutdatedCaches: true,
@@ -57,6 +62,21 @@ export default defineConfig({
         // Opt out of auto-preload by routing all requests through fetch-event
         importScripts: ['sw-preload-fix.js'],
         runtimeCaching: [
+          // Navigation requests (SPA page loads): NetworkFirst ensures fresh HTML is fetched
+          // and cached, with graceful fallback to cached index.html when offline.
+          // This fixes HarmonyOS ArkWeb's ERR_FAILED (-2) when SW navigation-fallback
+          // returns an empty/undefined response for deep URLs with query strings.
+          {
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'navigation-cache',
+              networkTimeoutSeconds: 10,
+              cacheableResponse: {
+                statuses: [200],
+              },
+            },
+          },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',
@@ -134,42 +154,20 @@ export default defineConfig({
     rollupOptions: {
       output: {
         entryFileNames: 'assets/app-[hash].js',
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom'],
-          'query-vendor': ['@tanstack/react-query', '@tanstack/react-virtual'],
-          'radix-vendor': [
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-dropdown-menu',
-            '@radix-ui/react-scroll-area',
-          ],
-          'syntax-highlighter': ['shiki', '@shikijs/transformers'],
-          'motion-vendor': ['motion', 'framer-motion'],
-          'i18n-vendor': ['i18next', 'react-i18next'],
-          'utils-vendor': ['clsx', 'tailwind-merge', 'class-variance-authority', 'zustand', 'wouter'],
-          'lang-vendor': ['eld'],
-          'html-parser-vendor': [
-            'unified',
-            'rehype-parse',
-            'rehype-sanitize',
-            'rehype-stringify',
-            'hast-util-to-jsx-runtime',
-          ],
-          'masonry-vendor': ['@virtuoso.dev/masonry'],
-          'carousel-vendor': ['embla-carousel-react'],
+        manualChunks(id: string) {
+          if (id.includes('node_modules')) {
+            if (id.includes('/react/') || id.includes('/react-dom/')) return 'react-vendor'
+            if (id.includes('@tanstack/react-query') || id.includes('@tanstack/react-virtual')) return 'query-vendor'
+            if (id.includes('@radix-ui/')) return 'radix-vendor'
+            if (id.includes('/motion/') || id.includes('/framer-motion/')) return 'motion-vendor'
+            if (id.includes('/i18next/') || id.includes('/react-i18next/')) return 'i18n-vendor'
+            if (id.includes('/clsx/') || id.includes('/tailwind-merge/') || id.includes('/zustand/') || id.includes('/wouter/')) return 'utils-vendor'
+            if (id.includes('/unified/') || id.includes('/rehype-parse/') || id.includes('/rehype-sanitize/') || id.includes('/rehype-stringify/') || id.includes('/hast-util-to-jsx-runtime/')) return 'html-parser-vendor'
+            if (id.includes('@virtuoso.dev/masonry')) return 'masonry-vendor'
+            if (id.includes('/embla-carousel')) return 'carousel-vendor'
+          }
         },
       },
-    },
-  },
-  test: {
-    globals: true,
-    environment: 'jsdom',
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['e2e/**', 'node_modules/**'],
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'json', 'html'],
-      include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.d.ts', 'src/main.tsx'],
     },
   },
 })

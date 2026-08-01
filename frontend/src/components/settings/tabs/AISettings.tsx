@@ -1,9 +1,29 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getAISettings, updateAISettings, testAIConnection, ApiError } from '@/api'
 import { cn } from '@/lib/utils'
 import { Switch } from '@/components/ui/switch'
-import type { AIProvider, AISettings as AISettingsType, ReasoningEffort } from '@/types/settings'
+import type { AIProvider, AISettings as AISettingsType, RequestOptions } from '@/types/settings'
+
+function formatRequestOptions(value: RequestOptions | null | undefined): string {
+  if (!value || Object.keys(value).length === 0) return ''
+  return JSON.stringify(value, null, 2)
+}
+
+function parseRequestOptions(value: string): { ok: true; value: RequestOptions } | { ok: false; error: string } {
+  const trimmed = value.trim()
+  if (!trimmed) return { ok: true, value: {} }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'request options must be a JSON object' }
+    }
+    return { ok: true, value: parsed as RequestOptions }
+  } catch {
+    return { ok: false, error: 'invalid JSON' }
+  }
+}
 
 export function AISettings() {
   const { t } = useTranslation()
@@ -13,30 +33,6 @@ export function AISettings() {
       { value: 'openai', label: t('ai_settings.provider_openai') },
       { value: 'anthropic', label: t('ai_settings.provider_anthropic') },
       { value: 'compatible', label: t('ai_settings.provider_compatible') },
-    ],
-    [t]
-  )
-
-  const OPENAI_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = useMemo(
-    () => [
-      { value: 'xhigh', label: t('ai_settings.effort_xhigh') },
-      { value: 'high', label: t('ai_settings.effort_high') },
-      { value: 'medium', label: t('ai_settings.effort_medium') },
-      { value: 'low', label: t('ai_settings.effort_low') },
-      { value: 'minimal', label: t('ai_settings.effort_minimal') },
-      { value: 'none', label: t('ai_settings.effort_none') },
-    ],
-    [t]
-  )
-
-  const COMPATIBLE_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = useMemo(
-    () => [
-      { value: 'xhigh', label: t('ai_settings.effort_xhigh_percent') },
-      { value: 'high', label: t('ai_settings.effort_high_percent') },
-      { value: 'medium', label: t('ai_settings.effort_medium_percent') },
-      { value: 'low', label: t('ai_settings.effort_low_percent') },
-      { value: 'minimal', label: t('ai_settings.effort_minimal_percent') },
-      { value: 'none', label: t('ai_settings.effort_none') },
     ],
     [t]
   )
@@ -56,6 +52,7 @@ export function AISettings() {
   )
 
   const [settings, setSettings] = useState<AISettingsType | null>(null)
+  const [requestOptionsText, setRequestOptionsText] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
@@ -66,6 +63,8 @@ export function AISettings() {
     ? settings.provider === 'openai' || settings.provider === 'compatible'
     : false
   const hasBaseURL = settings ? settings.baseUrl.trim().length > 0 : false
+  const requestOptionsResult = useMemo(() => parseRequestOptions(requestOptionsText), [requestOptionsText])
+  const requestOptionsError = requestOptionsResult.ok ? null : t('ai_settings.request_options_invalid')
 
   useEffect(() => {
     loadSettings()
@@ -78,6 +77,7 @@ export function AISettings() {
     try {
       const data = await getAISettings()
       setSettings(data)
+      setRequestOptionsText(formatRequestOptions(data.requestOptions))
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message)
@@ -89,34 +89,30 @@ export function AISettings() {
     }
   }
 
-  const handleChange = (field: keyof AISettingsType, value: string | boolean | number) => {
+  const handleChange = (field: keyof AISettingsType, value: string | boolean | number | RequestOptions) => {
     if (!settings) return
     setSettings({ ...settings, [field]: value } as AISettingsType)
     setSuccessMessage(null)
     setTestResult(null)
   }
 
-  const handleMultiChange = (changes: Partial<AISettingsType>) => {
-    if (!settings) return
-    setSettings({ ...settings, ...changes })
-    setSuccessMessage(null)
-    setTestResult(null)
+  const buildSettingsPayload = (): AISettingsType | null => {
+    if (!settings || !requestOptionsResult.ok) return null
+    return { ...settings, requestOptions: requestOptionsResult.value }
   }
 
   const handleTest = async () => {
-    if (!settings) return
+    const payload = buildSettingsPayload()
+    if (!payload) return
     setIsTesting(true)
     setTestResult(null)
     try {
       const result = await testAIConnection({
-        provider: settings.provider,
-        apiKey: settings.apiKey,
-        baseUrl: settings.baseUrl,
-        model: settings.model,
-        thinkingSupported: settings.thinkingSupported,
-        thinking: settings.thinking,
-        thinkingBudget: settings.thinkingBudget,
-        reasoningEffort: settings.reasoningEffort,
+        provider: payload.provider,
+        apiKey: payload.apiKey,
+        baseUrl: payload.baseUrl,
+        model: payload.model,
+        requestOptions: payload.requestOptions,
       })
       setTestResult(result)
     } catch (err) {
@@ -130,12 +126,15 @@ export function AISettings() {
   }
 
   const handleSave = async () => {
-    if (!settings) return
+    const payload = buildSettingsPayload()
+    if (!payload) return
     setIsSaving(true)
     setError(null)
     setSuccessMessage(null)
     try {
-      await updateAISettings(settings)
+      const saved = await updateAISettings(payload)
+      setSettings(saved)
+      setRequestOptionsText(formatRequestOptions(saved.requestOptions))
       setSuccessMessage(t('ai_settings.settings_saved'))
     } catch (err) {
       if (err instanceof ApiError) {
@@ -166,6 +165,7 @@ export function AISettings() {
 
   const selectClass = 'h-9 w-full sm:w-48 rounded-md border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none'
   const inputClass = 'h-9 w-full sm:w-48 rounded-md border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none'
+  const canSubmit = Boolean(settings.apiKey && settings.model && (!isBaseURLRequired || hasBaseURL) && !requestOptionsError)
 
   return (
     <div className="space-y-1">
@@ -238,135 +238,28 @@ export function AISettings() {
         />
       </div>
 
-      {/* Reasoning Section */}
-      <div className="pb-1 pt-4 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        {t('ai_settings.extended_thinking')}
-      </div>
 
-      {/* Thinking Supported */}
-      <div className="flex flex-wrap items-center justify-between gap-2 py-2">
+      <div className="space-y-2 py-2">
         <div className="min-w-0">
-          <span className="text-sm font-medium">{t('ai_settings.thinking_supported')}</span>
-          <p className="text-xs text-muted-foreground">{t('ai_settings.thinking_supported_hint')}</p>
+          <span className="text-sm font-medium">{t('ai_settings.request_options')}</span>
+          <p className="text-xs text-muted-foreground">{t('ai_settings.request_options_hint')}</p>
         </div>
-        <Switch
-          checked={settings.thinkingSupported}
-          onCheckedChange={(checked) => handleChange('thinkingSupported', checked)}
-          className="shrink-0"
+        <textarea
+          value={requestOptionsText}
+          onChange={(e) => {
+            setRequestOptionsText(e.target.value)
+            setSuccessMessage(null)
+            setTestResult(null)
+          }}
+          placeholder={JSON.stringify({ key: 'value' }, null, 2)}
+          className={cn(
+            'min-h-32 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs focus:border-primary focus:outline-none',
+            requestOptionsError ? 'border-destructive' : 'border-border'
+          )}
+          spellCheck={false}
         />
+        {requestOptionsError && <p className="text-xs text-destructive">{requestOptionsError}</p>}
       </div>
-
-      {/* Enable Reasoning */}
-      {settings.thinkingSupported && (
-        <div className="flex flex-wrap items-center justify-between gap-2 py-2">
-          <div className="min-w-0">
-            <span className="text-sm font-medium">
-              {settings.provider === 'anthropic' ? t('ai_settings.extended_thinking') : t('ai_settings.enable_reasoning')}
-            </span>
-          </div>
-          <Switch
-            checked={settings.thinking}
-            onCheckedChange={(checked) => handleChange('thinking', checked)}
-            className="shrink-0"
-          />
-        </div>
-      )}
-
-      {/* OpenAI: Reasoning Effort */}
-      {settings.thinkingSupported && settings.thinking && settings.provider === 'openai' && (
-        <div className="flex flex-wrap items-center justify-between gap-2 py-2 pl-4">
-          <span className="text-sm">{t('ai_settings.reasoning_effort_label')}</span>
-          <select
-            value={settings.reasoningEffort}
-            onChange={(e) => handleChange('reasoningEffort', e.target.value)}
-            className={cn(selectClass, 'shrink-0')}
-          >
-            {OPENAI_EFFORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* Anthropic: Thinking Budget */}
-      {settings.thinkingSupported && settings.thinking && settings.provider === 'anthropic' && (
-        <div className="flex flex-wrap items-center justify-between gap-2 py-2 pl-4">
-          <div className="min-w-0">
-            <span className="text-sm">{t('ai_settings.thinking_budget_label')}</span>
-            <p className="text-xs text-muted-foreground">{t('ai_settings.thinking_budget_hint')}</p>
-          </div>
-          <input
-            type="number"
-            value={settings.thinkingBudget}
-            onChange={(e) => handleChange('thinkingBudget', parseInt(e.target.value) || 0)}
-            min={1024}
-            max={128000}
-            placeholder="10000"
-            className={cn(inputClass, 'w-24 shrink-0')}
-          />
-        </div>
-      )}
-
-      {/* Compatible: Both options */}
-      {settings.thinkingSupported && settings.thinking && settings.provider === 'compatible' && (
-        <div className="space-y-2 pl-4">
-          {/* Effort option */}
-          <div className="flex flex-wrap items-center justify-between gap-2 py-1">
-            <div className="flex items-center gap-2 min-w-0">
-              <input
-                type="radio"
-                id="compatible-effort"
-                name="compatible-mode"
-                checked={settings.reasoningEffort !== ''}
-                onChange={() => handleMultiChange({ reasoningEffort: 'medium', thinkingBudget: 0 })}
-                className="size-4 shrink-0"
-              />
-              <label htmlFor="compatible-effort" className="text-sm">
-                {t('ai_settings.reasoning_effort_mode')}
-              </label>
-            </div>
-            {settings.reasoningEffort !== '' && (
-              <select
-                value={settings.reasoningEffort}
-                onChange={(e) => handleChange('reasoningEffort', e.target.value)}
-                className={cn(selectClass, 'w-32 shrink-0')}
-              >
-                {COMPATIBLE_EFFORT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          {/* Budget option */}
-          <div className="flex flex-wrap items-center justify-between gap-2 py-1">
-            <div className="flex items-center gap-2 min-w-0">
-              <input
-                type="radio"
-                id="compatible-budget"
-                name="compatible-mode"
-                checked={settings.reasoningEffort === '' && settings.thinkingBudget > 0}
-                onChange={() => handleMultiChange({ reasoningEffort: '', thinkingBudget: 10000 })}
-                className="size-4 shrink-0"
-              />
-              <label htmlFor="compatible-budget" className="text-sm">
-                {t('ai_settings.thinking_budget_mode')}
-              </label>
-            </div>
-            {settings.reasoningEffort === '' && settings.thinkingBudget > 0 && (
-              <input
-                type="number"
-                value={settings.thinkingBudget}
-                onChange={(e) => handleChange('thinkingBudget', parseInt(e.target.value) || 0)}
-                min={1024}
-                max={128000}
-                placeholder="10000"
-                className={cn(inputClass, 'w-24 shrink-0')}
-              />
-            )}
-          </div>
-        </div>
-      )}
 
       {/* AI Behavior Section */}
       <div className="pb-1 pt-4 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -437,7 +330,7 @@ export function AISettings() {
         <button
           type="button"
           onClick={handleTest}
-          disabled={isTesting || !settings.apiKey || !settings.model || (isBaseURLRequired && !hasBaseURL)}
+          disabled={isTesting || !canSubmit}
           className={cn(
             'flex h-8 shrink-0 items-center gap-1.5 rounded-md px-4 text-sm font-medium transition-colors',
             'bg-muted hover:bg-muted/80',
@@ -462,7 +355,7 @@ export function AISettings() {
         <button
           type="button"
           onClick={handleSave}
-          disabled={isSaving || (isBaseURLRequired && !hasBaseURL)}
+          disabled={isSaving || !canSubmit}
           className={cn(
             'flex h-8 shrink-0 items-center gap-1.5 rounded-md px-4 text-sm font-medium transition-colors',
             'bg-primary text-primary-foreground hover:bg-primary/90',

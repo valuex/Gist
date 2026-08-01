@@ -5,6 +5,7 @@ import type {
   EntryListParams,
   EntryListResponse,
   Feed,
+  FeedViewMode,
   FeedPreview,
   Folder,
   ImportTask,
@@ -382,7 +383,7 @@ export async function createFeed(payload: {
 
 export async function updateFeed(
   id: string,
-  payload: { title: string; folderId?: string }
+  payload: { title: string; folderId?: string; summaryPromptReminder?: string }
 ): Promise<Feed> {
   return request<Feed>(`/api/feeds/${id}`, {
     method: 'PUT',
@@ -400,6 +401,13 @@ export async function updateFeedType(id: string, type: ContentType): Promise<voi
   return request<void>(`/api/feeds/${id}/type`, {
     method: 'PATCH',
     body: JSON.stringify({ type }),
+  })
+}
+
+export async function updateFeedViewMode(id: string, viewMode?: FeedViewMode): Promise<void> {
+  return request<void>(`/api/feeds/${id}/view-mode`, {
+    method: 'PATCH',
+    body: JSON.stringify({ viewMode }),
   })
 }
 
@@ -471,6 +479,13 @@ export async function updateEntryReadStatus(id: string, read: boolean): Promise<
   return request<void>(`/api/entries/${id}/read`, {
     method: 'PATCH',
     body: JSON.stringify({ read }),
+  })
+}
+
+export async function updateManyEntryReadStatus(ids: string[], read: boolean): Promise<void> {
+  return request<void>('/api/entries/read', {
+    method: 'PATCH',
+    body: JSON.stringify({ ids, read }),
   })
 }
 
@@ -913,4 +928,3 @@ export async function deleteDomainRateLimit(host: string): Promise<void> {
     method: 'DELETE',
   })
 }
-

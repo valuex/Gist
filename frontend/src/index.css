@@ -37,6 +37,7 @@
 
 :root {
   text-autospace: normal;
+  --app-dvh: 100dvh;
 
   --background: 0 0% 100%;
   --foreground: 240 10% 3.9%;
@@ -69,6 +70,12 @@
   --duration-sidebar-collapse: 220ms;
 }
 
+@media (display-mode: standalone) {
+  :root {
+    --app-dvh: 100lvh;
+  }
+}
+
 .dark {
   --background: 240 10% 3.9%;
   --foreground: 0 0% 98%;
@@ -93,7 +100,6 @@
   --sidebar-foreground: 240 4.8% 95.9%;
   --item-active: color-mix(in oklch, hsl(var(--foreground)) 15%, transparent);
   --item-hover: color-mix(in oklch, hsl(var(--foreground)) 10%, transparent);
-  scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
 }
 
 * {
@@ -101,9 +107,12 @@
 }
 
 html {
-  /* Prevent pinch-to-zoom and browser default swipe navigation */
-  touch-action: pan-x pan-y;
-  overscroll-behavior-x: none;
+  /* Prevent horizontal swipe-to-navigate (back/forward) */
+  overscroll-behavior: none;
+  background-color: theme(colors.background);
+  width: 100%;
+  height: var(--app-dvh);
+  overflow: hidden;
 }
 
 body {
@@ -124,9 +133,6 @@ body {
 @supports not (height: 100dvh) {
   .h-dvh {
     height: 100vh;
-  }
-  .min-h-dvh {
-    min-height: 100vh;
   }
 }
 
@@ -460,11 +466,6 @@ body {
 
 .entry-content .prose pre code > .line.highlighted::before {
   background: hsl(var(--primary));
-}
-
-/* Fix for Radix UI ScrollArea viewport forcing table display which expands width */
-.entry-content-viewport>div {
-  display: block !important;
 }
 
 /* Table wrapper - isolate layout calculation to prevent iOS Safari crash */

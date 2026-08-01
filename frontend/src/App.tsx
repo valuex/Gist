@@ -1,4 +1,4 @@
-import { useCallback, useState, useMemo, useEffect } from 'react'
+import { Suspense, lazy, useCallback, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react'
 import { Router, useLocation, Redirect } from 'wouter'
 import { useTranslation } from 'react-i18next'
 import { ThreeColumnLayout } from '@/components/layout/three-column-layout'
@@ -7,7 +7,6 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Sidebar } from '@/components/sidebar'
 import { AddFeedPage } from '@/components/add-feed'
 import { EntryList } from '@/components/entry-list'
-import { EntryContent } from '@/components/entry-content'
 import { PictureMasonry, Lightbox } from '@/components/picture-masonry'
 import { ScrollToTopZone } from '@/components/layout/ScrollToTopZone'
 import { ImagePreview } from '@/components/ui/image-preview'
@@ -23,11 +22,17 @@ import { useAppearanceSettings } from '@/hooks/useAppearanceSettings'
 import { useTitle, buildTitle } from '@/hooks/useTitle'
 import { useUISettingKey, useUISettingActions, hasSidebarVisibilitySetting, setUISetting } from '@/hooks/useUISettings'
 import { useRefreshStatus } from '@/hooks/useRefreshStatus'
+import { getEntryScrollPosition } from '@/hooks/useEntryContentScroll'
 import { isAddFeedPath } from '@/lib/router'
 import { cn } from '@/lib/utils'
+
 import type { ContentType, Feed, Folder } from '@/types/api'
 
 const defaultContentTypes: ContentType[] = ['article', 'picture', 'notification']
+const LazyEntryContent = lazy(async () => {
+  const module = await import('@/components/entry-content')
+  return { default: module.EntryContent }
+})
 
 function LoadingScreen() {
   const { t } = useTranslation()
@@ -36,6 +41,61 @@ function LoadingScreen() {
       <div className="flex flex-col items-center gap-4">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         <p className="text-sm text-muted-foreground">{t('entry.loading')}</p>
+      </div>
+    </div>
+  )
+}
+
+function EntryContentPlaceholder({ message }: { message: string }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-12 items-center px-6" />
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center text-muted-foreground">
+          <svg
+            className="mx-auto size-12 opacity-50"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          <p className="mt-2 text-sm">{message}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EntryContentFallback() {
+  return (
+    <div className="relative flex h-full flex-col animate-pulse">
+      <div className="absolute inset-x-0 top-0 z-20">
+        <div className="h-12" />
+      </div>
+      <div className="flex-1 overflow-auto">
+        <div className="mx-auto w-full max-w-[720px] px-6 pb-20 pt-16">
+          <div className="mb-10 space-y-5">
+            <div className="h-10 w-3/4 rounded bg-muted" />
+            <div className="flex gap-6">
+              <div className="h-4 w-24 rounded bg-muted" />
+              <div className="h-4 w-32 rounded bg-muted" />
+            </div>
+            <hr className="border-border/60" />
+          </div>
+          <div className="space-y-4">
+            <div className="h-4 w-full rounded bg-muted" />
+            <div className="h-4 w-full rounded bg-muted" />
+            <div className="h-4 w-3/4 rounded bg-muted" />
+            <div className="h-4 w-full rounded bg-muted" />
+            <div className="h-4 w-5/6 rounded bg-muted" />
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -54,6 +114,46 @@ function AuthenticatedApp() {
     closeSidebar,
   } = useMobileLayout()
 
+  // Mobile detail view transition: controls whether the detail panel is mounted
+  // and whether it is animating out (exiting). The detail renders in document flow
+  // (not inside a fixed/overflow-hidden container) so that window is the scroll
+  // container, which is required for mobile browsers to auto-hide the address bar.
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(mobileView === 'detail')
+  const prevMobileViewRef = useRef(mobileView)
+  // Ref so the useLayoutEffect below can read the latest selectedEntryId without
+  // needing it in its deps (selectedEntryId is declared after this effect).
+  const selectedEntryIdRef = useRef<string | null>(null)
+  // useLayoutEffect to apply list/detail visibility synchronously before the browser
+  // paints, eliminating the flash of blank content during transitions.
+  useLayoutEffect(() => {
+    const prev = prevMobileViewRef.current
+    prevMobileViewRef.current = mobileView
+    if (mobileView === 'detail') {
+      setMobileDetailOpen(true)
+      // Do NOT scrollTo here — the detail div is still display:none at this
+      // point, so the document has no height and window.scrollTo would fail.
+      // Scroll restore happens in the mobileDetailOpen effect below.
+    } else if (prev === 'detail') {
+      // Immediately show list so it is visible while the detail slides out.
+      // Scroll restoration is handled by EntryList's useLayoutEffect (isActive → true).
+      setMobileDetailOpen(false)
+    }
+  }, [mobileView])
+
+  // Restore (or reset) window scroll AFTER the detail div becomes visible.
+  // setMobileDetailOpen(true) triggers a synchronous re-render; this effect
+  // fires on that second render when the detail div is block and has height.
+  useLayoutEffect(() => {
+    if (!mobileDetailOpen) return
+    const id = selectedEntryIdRef.current
+    const saved = id ? getEntryScrollPosition(id) : undefined
+    if (saved != null && saved > 0) {
+      window.scrollTo(0, saved)
+    } else {
+      window.scrollTo(0, 0)
+    }
+  }, [mobileDetailOpen])
+
   const {
     selection,
     selectAll,
@@ -66,6 +166,9 @@ function AuthenticatedApp() {
     toggleUnreadOnly,
     contentType,
   } = useSelection()
+
+  // Keep ref in sync so the mobileView useLayoutEffect can read it
+  selectedEntryIdRef.current = selectedEntryId
 
   const { mutate: markAllAsRead } = useMarkAllAsRead()
   const [addFeedContentType, setAddFeedContentType] = useState<ContentType>('article')
@@ -183,7 +286,7 @@ function AuthenticatedApp() {
       // folder: start after the last feed belonging to this folder in the current ordering
       let lastIdx = -1
       for (let i = 0; i < candidates.length; i += 1) {
-        if (candidates[i].folderId === selection.folderId) {
+        if (candidates[i]?.folderId === selection.folderId) {
           lastIdx = i
         }
       }
@@ -254,22 +357,32 @@ function AuthenticatedApp() {
     }
   }, [visibleContentTypes, contentType, selectAll])
 
-  // On mobile, lock body scroll when the detail view is shown.
-  // This prevents the background list (which stays in the document flow for scroll
-  // position preservation) from being scrollable while the fixed detail overlay is open.
-  useEffect(() => {
-    if (!isMobile || mobileView !== 'detail') return
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = ''
-    }
-  }, [isMobile, mobileView])
+  const entryContent = selectedEntryId ? (
+    <Suspense fallback={<EntryContentFallback />}>
+      <LazyEntryContent key={selectedEntryId} entryId={selectedEntryId} />
+    </Suspense>
+  ) : (
+    <EntryContentPlaceholder message={t('entry.select_article')} />
+  )
+
+  const mobileEntryContent = selectedEntryId ? (
+    <Suspense fallback={<EntryContentFallback />}>
+      <LazyEntryContent
+        key={selectedEntryId}
+        entryId={selectedEntryId}
+        isMobile
+        onBack={showList}
+      />
+    </Suspense>
+  ) : (
+    <EntryContentPlaceholder message={t('entry.select_article')} />
+  )
 
   // Redirect root to /all with first visible type (must be after ALL hooks including useCallback)
   if (location === '/') {
     // 等待 appearanceSettings 加载完成再跳转，避免先跳 article 再跳正确类型
     if (isAppearanceLoading) {
-      return <div className="h-dvh bg-background" />
+      return <div className="h-full bg-background" />
     }
     const defaultType = visibleContentTypes[0] ?? 'article'
     return <Redirect to={`/all?type=${defaultType}`} replace />
@@ -277,7 +390,7 @@ function AuthenticatedApp() {
 
   // 等待 appearanceSettings 加载完成，避免显示默认三视图的闪烁
   if (isAppearanceLoading) {
-    return <div className="h-dvh bg-background" />
+    return <div className="h-full bg-background" />
   }
 
   // Sidebar component (shared between mobile and desktop)
@@ -320,17 +433,15 @@ function AuthenticatedApp() {
         </div>
       )
     } else {
-      // List and detail views rendered together.
-      // List is in normal document flow so window scroll drives the entry list —
-      // Android Chrome collapses the address bar / bottom toolbar when the user scrolls down.
-      // Detail view uses position:fixed so it slides over the list without requiring
-      // overflow:hidden on a wrapper (which would break window scrolling).
+      // Both list and detail use window as the scroll container so that mobile
+      // browsers auto-hide the address bar / toolbar on scroll.
+      // Only one panel is in document flow at a time; the other is hidden.
       mobileContent = (
-        <>
-          {/* List view: document flow, window-scroll enabled */}
+        <div className="relative h-dvh w-screen max-w-full overflow-hidden">
+          {/* List view - always rendered to preserve scroll position */}
           <div className={cn(
-            'flex flex-col bg-background safe-area-top',
-            mobileView === 'detail' && 'invisible pointer-events-none'
+            'bg-background',
+            mobileDetailOpen && 'hidden'
           )}>
             <EntryList
               selection={selection}
@@ -342,22 +453,17 @@ function AuthenticatedApp() {
               onToggleUnreadOnly={toggleUnreadOnly}
               contentType={contentType}
               isMobile
+              isActive={!mobileDetailOpen}
               onMenuClick={openSidebar}
             />
           </div>
-          {/* Detail view: fixed overlay slides in from right */}
+          {/* Detail view - shown only when an entry is selected (tap to enter) */}
           <div className={cn(
-            'fixed inset-0 bg-background transition-transform duration-300 ease-out safe-area-top',
-            mobileView === 'detail' ? 'translate-x-0' : 'translate-x-full'
+            'absolute inset-0 bg-background safe-area-top',
+            mobileDetailOpen ? 'block' : 'hidden'
           )}>
-            <EntryContent
-              key={selectedEntryId}
-              entryId={selectedEntryId}
-              isMobile
-              onBack={showList}
-            />
-          </div>
-        </>
+            {mobileEntryContent}          </div>
+        </div>
       )
     }
 
@@ -436,7 +542,7 @@ function AuthenticatedApp() {
             sidebarVisible={sidebarVisible}
           />
         }
-        content={<EntryContent key={selectedEntryId} entryId={selectedEntryId} />}
+        content={entryContent}
         showSidebar={showSidebar}
       />
       <ImagePreview />
@@ -445,7 +551,31 @@ function AuthenticatedApp() {
 }
 
 function AppContent() {
-  const { isLoading, isAuthenticated, needsRegistration, needsLogin, isNetworkError, error, login, register, retry, clearError } = useAuth()
+  const [location, navigate] = useLocation()
+  const {
+    isLoading,
+    isAuthenticated,
+    needsRegistration,
+    needsLogin,
+    isNetworkError,
+    error,
+    shouldRedirectToRoot,
+    login,
+    register,
+    retry,
+    clearError,
+    consumeRootRedirect,
+  } = useAuth()
+
+  useEffect(() => {
+    if (!shouldRedirectToRoot) {
+      return
+    }
+    if (location !== '/') {
+      navigate('/', { replace: true })
+    }
+    consumeRootRedirect()
+  }, [shouldRedirectToRoot, location, navigate, consumeRootRedirect])
 
   if (isLoading) {
     return <LoadingScreen />
@@ -472,12 +602,14 @@ function AppContent() {
 
 function App() {
   return (
-    <TooltipProvider delayDuration={300}>
-      <Router>
-        <AppContent />
-        <UpdateNotice />
-      </Router>
-    </TooltipProvider>
+    <div className="app-shell">
+      <TooltipProvider delayDuration={300}>
+        <Router>
+          <AppContent />
+          <UpdateNotice />
+        </Router>
+      </TooltipProvider>
+    </div>
   )
 }
 
